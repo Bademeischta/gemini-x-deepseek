@@ -46,14 +46,35 @@ try:
         print(f"Starting processing...")
 
         for i, row in enumerate(reader):
-            try:
-                fen = row['FEN']
-                moves = row['Moves'].split(' ')
+            if (i + 1) % 100000 == 0:
+                print(f"Rows processed: {i+1}, Valid positions written: {processed_count}", flush=True)
 
-                if not moves:
+            try:
+                # Rating Filter
+                rating = int(row['Rating'])
+                if not 1800 <= rating <= 2400:
+                    continue
+
+                # FEN Validation
+                try:
+                    fen = row['FEN']
+                    board = chess.Board(fen)
+                except ValueError as e:
+                    raise ValueError(f"Invalid FEN: {e}")
+
+                moves = row['Moves'].split(' ')
+                if not moves or not moves[0]:
                     raise ValueError("Empty 'Moves' column")
 
+                # Move Validation
                 policy_target = moves[0]
+                try:
+                    move = board.parse_uci(policy_target)
+                except ValueError as e:
+                    raise ValueError(f"Invalid move format: {policy_target}")
+
+                if move not in board.legal_moves:
+                    raise ValueError(f"Illegal move '{policy_target}' for FEN '{fen}'")
 
                 turn = fen.split(' ')[1]
                 value = 1.0 if turn == 'w' else -1.0
@@ -68,6 +89,10 @@ try:
 
                 outfile.write(json.dumps(target_data) + '\n')
                 processed_count += 1
+
+                if processed_count >= 1000000:
+                    print("Target of 1 million valid positions reached. Stopping.", flush=True)
+                    break
 
             except Exception as e:
                 error_message = f"Error in line {i+1} (CSV line {i+2}): {e}\nDATA: {row}\n"
