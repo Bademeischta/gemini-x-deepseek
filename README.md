@@ -18,8 +18,8 @@ Das System basiert auf drei Säulen:
 -   [ ] **Phase 1: Prototyping**
     -   [ ] **Arbeitspaket 1.1: Daten-Pipeline (Puzzles)**
         -   [x] Skript `process_puzzles.py` zur Erstellung des taktischen Datensatz-Subsets aus der Lichess Puzzle DB
-    -   [ ] **Arbeitspaket 1.2: Daten-Pipeline (Strategie)**
-        -   [ ] Skript `process_elite_games.py` zur Erstellung des strategischen Datensatz-Subsets aus der Lichess Elite DB
+    -   [x] **Arbeitspaket 1.2: Daten-Pipeline (Strategie)**
+        -   [x] Skript `process_elite_games.py` zur Erstellung des strategischen Datensatz-Subsets aus der Lichess Elite DB
     -   [ ] **Arbeitspaket 1.3: RCN-Modell Implementierung**
         -   [ ] Definition der Graphen-Struktur in PyTorch Geometric
         -   [ ] Implementierung des Multi-Task-Modells (Value, Policy, Tactic, Strategic Heads)
@@ -38,7 +38,7 @@ Das System basiert auf drei Säulen:
 
 Die Konzeption ist abgeschlossen. Wir befinden uns in **Phase 1 (Prototyping)**.
 
-Das erste Arbeitspaket (`1.1`) wurde fertiggestellt. Das Skript `scripts/process_puzzles.py` kann nun den ersten Teil unseres KKK-Datensatzes, den taktischen Teil, erstellen.
+Die Arbeitspakete `1.1` und `1.2` wurden fertiggestellt. Die Daten-Pipelines zur Erstellung des KKK-Prototyp-Subsets sind nun vollständig. Wir können sowohl taktische Positionen (aus Puzzles) als auch strategische Positionen (aus Elite-Partien) extrahieren und verarbeiten.
 
 ## Nutzung
 
@@ -52,3 +52,14 @@ Das erste Arbeitspaket (`1.1`) wurde fertiggestellt. Das Skript `scripts/process
 3.  Das Skript wird die Lichess Puzzle-Datenbank (ca. 3 GB) automatisch herunterladen und in das `data/`-Verzeichnis entpacken. Dieser Schritt kann einige Zeit dauern.
 4.  Anschließend werden die Daten verarbeitet. Der Fortschritt wird auf der Konsole ausgegeben.
 5.  **Ergebnis:** Eine Datei `data/kkk_subset_puzzles.jsonl` wird erstellt, die bis zu 1 Million validierte, taktische Schachpositionen im JSON-Lines-Format enthält. Eine `error_log.txt` wird für alle fehlerhaften Zeilen erstellt.
+
+### Erstellung des strategischen Datensatzes
+
+1.  Stellen Sie sicher, dass Python 3.8+ und die erforderlichen Bibliotheken (`requests`, `python-chess`, `zstandard`) installiert sind.
+2.  Führen Sie das Skript vom Hauptverzeichnis aus:
+    ```bash
+    python scripts/process_elite_games.py
+    ```
+3.  Das Skript wird eine Monatsdatenbank von Lichess (z.B. `lichess_db_standard_rated_2023-01.pgn.zst`, ca. 20+ GB) automatisch in das `data/`-Verzeichnis herunterladen. Dieser Schritt ist sehr zeit- und datenintensiv.
+4.  Anschließend werden die Partien im Stream verarbeitet, um strategische Positionen zu extrahieren. Der Fortschritt wird auf der Konsole ausgegeben.
+5.  **Ergebnis:** Eine Datei `data/kkk_subset_strategic.jsonl` wird erstellt, die bis zu 1 Million validierte, strategische Schachpositionen enthält. Eine `error_log_strategic.txt` wird für alle Verarbeitungsfehler erstellt.
