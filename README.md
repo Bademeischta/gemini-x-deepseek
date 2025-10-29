@@ -27,7 +27,8 @@ Das System basiert auf drei Säulen:
         -   [x] Trainings-Loop für das RCN-Modell
         -   [ ] Validierung der Konvergenz auf dem KKK-Subset
 -   [ ] **Phase 2: Inferenz-Implementierung**
-    -   [ ] Implementierung des IR-AB Suchalgorithmus
+    -   [x] **Arbeitspaket 2.1: UCI-Grundgerüst**
+    -   [ ] **Arbeitspaket 2.2: Vollständige IR-AB-Implementierung**
 -   [ ] **Phase 3: Integration & Test**
     -   [ ] Integration von RCN und IR-AB zu einer funktionalen Engine
     -   [ ] Testpartien gegen Benchmark-Engines
@@ -36,9 +37,7 @@ Das System basiert auf drei Säulen:
 
 ## Aktueller Stand (23. Oktober 2025)
 
-Die Konzeption ist abgeschlossen. Wir befinden uns in **Phase 1 (Prototyping)**.
-
-Die Daten-Pipelines (`1.1`, `1.2`), die Modellarchitektur (`1.3`) sowie die vollständige Trainings- und Validierungsinfrastruktur (`1.4`) sind nun implementiert. Das Skript `train.py` führt alle Komponenten zusammen und ermöglicht das Training des RCN-Modells auf dem KKK-Datensatz. Phase 1, das Prototyping, nähert sich damit dem Abschluss.
+Wir befinden uns nun im finalen Schritt von Phase 2: der Implementierung des IR-AB Suchalgorithmus in engine.py.
 
 ## Nutzung
 
