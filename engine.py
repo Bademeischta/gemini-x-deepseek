@@ -3,6 +3,7 @@ import sys
 import random
 import logging
 import os
+import time
 import torch
 
 # Add the project root to the Python path to allow importing from 'scripts'
@@ -36,19 +37,25 @@ class Searcher:
         log_command("ENGINE_INFO", f"Using device: {self.device}")
 
         self.model = RCNModel()
+        if not os.path.exists(model_path):
+            log_command("ENGINE_WARNING", f"Model not found at {model_path}")
+            log_command("ENGINE_WARNING", "Creating dummy model for testing...")
+            from scripts.create_dummy_model import create_dummy_model
+            create_dummy_model()
+
         try:
             self.model.load_state_dict(torch.load(model_path, map_location=self.device))
             log_command("ENGINE_INFO", f"Model loaded successfully from {model_path}")
-        except FileNotFoundError:
-            log_command("ENGINE_ERROR", f"Model file not found at {model_path}. The engine will not work.")
-            # In a real scenario, we might want to exit or handle this more gracefully.
-            raise
         except Exception as e:
             log_command("ENGINE_ERROR", f"An error occurred while loading the model: {e}")
             raise
 
         self.model.to(self.device)
         self.model.eval()
+
+        # --- Search Enhancements ---
+        self.pv_table = {} # To store Principal Variation
+        self.nodes_searched = 0
 
     def _evaluate(self, board):
         """
@@ -96,93 +103,163 @@ class Searcher:
 
         return alpha if board.turn == chess.WHITE else beta
 
-    def _get_ordered_moves(self, board):
+    def _get_ordered_moves(self, board, pv_move=None):
         """
-        Gets all legal moves and sorts them based on the policy head output.
+        Gets all legal moves and sorts them using enhanced move ordering heuristics.
+        1. PV Move from previous iteration.
+        2. MVV-LVA for captures.
+        3. Policy network predictions as a fallback/bonus.
         """
         graph_data = fen_to_graph_data(board.fen()).to(self.device)
         with torch.no_grad():
             output = self.model(graph_data)
             policy_logits = output['policy']
 
+        piece_values = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 100}
+
+        def move_score(move):
+            score = 0
+            # 1. PV Move has the highest priority
+            if pv_move and move == pv_move:
+                return 10000
+
+            # 2. Captures with MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+            if board.is_capture(move):
+                victim_piece = board.piece_at(move.to_square)
+                attacker_piece = board.piece_at(move.from_square)
+                # In case of en-passant, the victim piece is not at the 'to_square'
+                if victim_piece is None and board.is_en_passant(move):
+                    victim_piece = chess.Piece(chess.PAWN, not board.turn)
+
+                if victim_piece and attacker_piece:
+                    victim_value = piece_values.get(victim_piece.piece_type, 0)
+                    attacker_value = piece_values.get(attacker_piece.piece_type, 0)
+                    score += 1000 + (victim_value * 10 - attacker_value)
+
+            # 3. Add policy head score as a bonus
+            try:
+                score += policy_logits[0, uci_to_index(move.uci())].item()
+            except IndexError:
+                pass
+
+            return score
+
         legal_moves = list(board.legal_moves)
-        move_scores = [policy_logits[0, uci_to_index(m.uci())].item() for m in legal_moves]
+        return sorted(legal_moves, key=move_score, reverse=True)
 
-        # Sort moves by their scores in descending order
-        sorted_moves = [move for _, move in sorted(zip(move_scores, legal_moves), reverse=True)]
-        return sorted_moves
+    def _ir_alpha_beta(self, board, depth, alpha, beta, pv_line, start_time, time_limit):
+        # Time check inside the recursive search
+        if time_limit and (time.time() - start_time) > time_limit:
+            raise TimeoutError
 
-    def _ir_alpha_beta(self, board, depth, alpha, beta):
+        self.nodes_searched += 1
+
         if depth == 0:
-            # At leaf nodes, enter quiescence search
-            graph_data = fen_to_graph_data(board.fen()).to(self.device)
-            with torch.no_grad():
-                output = self.model(graph_data)
+            return self._quiescence_search(board, alpha, beta, 4) # Quiescence search at leaf
 
-            tactic_flag = output['tactic'].item()
-            max_q_depth = 4
-            if tactic_flag > 0.5:
-                max_q_depth += 2 # Extend search in sharp positions
+        if board.is_game_over(claim_draw=True):
+            if board.is_checkmate():
+                return -float('inf')  # A mate found against us is very bad
+            return 0 # Draw
 
-            return self._quiescence_search(board, alpha, beta, max_q_depth)
+        # Get the PV move for the current position from the main pv_line
+        current_pv_move = pv_line[0] if pv_line else None
+        ordered_moves = self._get_ordered_moves(board, pv_move=current_pv_move)
 
-        ordered_moves = self._get_ordered_moves(board)
+        best_move_found = None
 
         if board.turn == chess.WHITE:
             max_eval = -float('inf')
             for move in ordered_moves:
                 temp_board = board.copy()
                 temp_board.push(move)
-                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta)
-                max_eval = max(max_eval, eval)
+
+                child_pv = pv_line[1:] if current_pv_move == move and pv_line else []
+                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta, child_pv, start_time, time_limit)
+
+                if eval > max_eval:
+                    max_eval = eval
+                    best_move_found = move
+
                 alpha = max(alpha, eval)
                 if beta <= alpha:
-                    break  # Beta cutoff
+                    break # Beta cutoff
             return max_eval
         else:
             min_eval = float('inf')
             for move in ordered_moves:
                 temp_board = board.copy()
                 temp_board.push(move)
-                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta)
-                min_eval = min(min_eval, eval)
-                beta = min(beta, eval)
-                if beta <= alpha:
-                    break  # Alpha cutoff
-            return min_eval
 
-    def search(self, board, depth):
-        """
-        Entry point for the IR-AB search.
-        """
-        best_move = None
-        alpha = -float('inf')
-        beta = float('inf')
+                child_pv = pv_line[1:] if current_pv_move == move and pv_line else []
+                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta, child_pv, start_time, time_limit)
 
-        ordered_moves = self._get_ordered_moves(board)
-
-        if board.turn == chess.WHITE:
-            max_eval = -float('inf')
-            for move in ordered_moves:
-                temp_board = board.copy()
-                temp_board.push(move)
-                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta)
-                if eval > max_eval:
-                    max_eval = eval
-                    best_move = move
-                alpha = max(alpha, eval)
-        else:
-            min_eval = float('inf')
-            for move in ordered_moves:
-                temp_board = board.copy()
-                temp_board.push(move)
-                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta)
                 if eval < min_eval:
                     min_eval = eval
-                    best_move = move
-                beta = min(beta, eval)
+                    best_move_found = move
 
-        log_command("SEARCH_RESULT", f"Best move: {best_move.uci() if best_move else 'None'}")
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break # Alpha cutoff
+            return min_eval
+
+    def search(self, board, depth, time_limit):
+        """
+        Entry point for the search, using Iterative Deepening.
+        """
+        start_time = time.time()
+        self.nodes_searched = 0
+        best_move = None
+        principal_variation = []
+
+        for current_depth in range(1, depth + 1):
+            try:
+                # Root level of the search for the current iteration
+                alpha = -float('inf')
+                beta = float('inf')
+
+                # Use PV from previous iteration for move ordering
+                ordered_moves = self._get_ordered_moves(board, pv_move=principal_variation[0] if principal_variation else None)
+
+                current_best_move = None
+
+                for move in ordered_moves:
+                    temp_board = board.copy()
+                    temp_board.push(move)
+
+                    # Pass the rest of the PV to the search
+                    child_pv = principal_variation[1:] if principal_variation and move == principal_variation[0] else []
+                    eval = self._ir_alpha_beta(temp_board, current_depth - 1, -beta, -alpha, child_pv, start_time, time_limit)
+                    eval = -eval # Negamax adjustment
+
+                    if eval > alpha:
+                        alpha = eval
+                        current_best_move = move
+                        # TODO: Reconstruct PV here if needed for deeper searches
+
+                # After searching all root moves, update the best move for this iteration
+                if current_best_move:
+                    best_move = current_best_move
+                    # A proper PV reconstruction would be needed here for perfect move ordering.
+                    # For now, we just use the best move from the last iteration.
+                    principal_variation = [best_move]
+
+                # UCI info output
+                elapsed_time = time.time() - start_time
+                score_cp = int(alpha * 100)
+                pv_str = best_move.uci() if best_move else "none"
+                send_command(f"info depth {current_depth} score cp {score_cp} nodes {self.nodes_searched} time {int(elapsed_time * 1000)} pv {pv_str}")
+
+            except TimeoutError:
+                log_command("ENGINE_INFO", f"Time limit reached at depth {current_depth}. Stopping search.")
+                break
+
+        log_command("SEARCH_RESULT", f"Best move: {best_move.uci() if best_move else 'None'} after {self.nodes_searched} nodes")
+
+        # Fallback if no legal moves are available at the start
+        if not best_move and list(board.legal_moves):
+            return list(board.legal_moves)[0]
+
         return best_move
 
 def main():
@@ -245,26 +322,89 @@ def handle_position(parts, board):
     except Exception as e:
         logging.error(f"Error handling 'position' command: {parts} - {e}")
 
+def calculate_search_time(wtime, btime, winc, binc, movestogo, side_to_move):
+    """
+    Calculates the optimal search time based on UCI parameters.
+    This is a simplified version of common time management algorithms.
+    All time values are in milliseconds.
+    """
+    time_left_ms = wtime if side_to_move == chess.WHITE else btime
+    increment_ms = winc if side_to_move == chess.WHITE else binc
+
+    # Convert to seconds for calculation
+    time_left = time_left_ms / 1000.0
+    increment = increment_ms / 1000.0
+
+    allocated_time = 0.0
+
+    # If movestogo is provided, it's a classical time control
+    if movestogo and movestogo > 0:
+        # Use a portion of the time remaining for the next control
+        allocated_time = (time_left / movestogo) + (increment * 0.8)
+    else:
+        # Otherwise, it's a sudden death or Fischer time control
+        # Use a fraction of the remaining time plus most of the increment
+        allocated_time = (time_left / 25) + (increment * 0.9)
+
+    # Safety buffer: never use more than 80% of the remaining time for a single move
+    max_time = time_left * 0.8
+
+    # Ensure we have a minimum time to think, e.g., 50ms
+    min_time = 0.05
+
+    # Clamp the allocated time between the min and max values
+    return max(min_time, min(allocated_time, max_time))
+
 def handle_go(parts, board, searcher):
     """Handles the 'go' UCI command by calling the searcher."""
-    depth = 4  # Default depth
-    if "depth" in parts:
-        try:
-            depth_index = parts.index("depth") + 1
-            if depth_index < len(parts):
-                depth = int(parts[depth_index])
-        except (ValueError, IndexError):
-            log_command("ENGINE_ERROR", f"Could not parse depth from 'go' command: {parts}")
+    # Default values
+    depth = 100  # Set a high depth limit for timed searches
+    time_limit = None
 
-    best_move = searcher.search(board, depth=depth)
+    # --- Parse UCI 'go' parameters ---
+    params = {}
+    i = 1
+    while i < len(parts):
+        if parts[i] in ["wtime", "btime", "winc", "binc", "movestogo", "depth"]:
+            try:
+                params[parts[i]] = int(parts[i+1])
+                i += 2
+            except (ValueError, IndexError):
+                log_command("ENGINE_ERROR", f"Could not parse value for '{parts[i]}'")
+                i += 1
+        else:
+            i += 1
+
+    # --- Time Management ---
+    if "wtime" in params and "btime" in params:
+        time_limit = calculate_search_time(
+            params.get("wtime", 0),
+            params.get("btime", 0),
+            params.get("winc", 0),
+            params.get("binc", 0),
+            params.get("movestogo"), # Can be None
+            board.turn
+        )
+        log_command("ENGINE_INFO", f"Time control active. Search time: {time_limit:.3f}s")
+    elif "depth" in params:
+        depth = params["depth"]
+        time_limit = None # No time limit for fixed depth search
+        log_command("ENGINE_INFO", f"Fixed depth search: {depth}")
+    else:
+        # Default to depth 4 if no params are given
+        depth = 4
+        time_limit = None
+        log_command("ENGINE_INFO", f"No params. Using default depth: {depth}")
+
+
+    best_move = searcher.search(board, depth=depth, time_limit=time_limit)
 
     if best_move:
         send_command(f"bestmove {best_move.uci()}")
     else:
-        # This can happen in mate positions where there are no legal moves.
-        # Although the UCI protocol doesn't specify what to do, sending a null move is a common practice.
-        log_command("ENGINE_INFO", "No legal moves found.")
-        # Some GUIs might expect "bestmove 0000" or nothing at all. Let's send nothing for now.
+        # UCI-Standard für "kein legaler Zug" (Matt/Patt)
+        send_command("bestmove 0000")
+        log_command("ENGINE_INFO", "No legal moves (mate/stalemate)")
 
 if __name__ == "__main__":
     main()

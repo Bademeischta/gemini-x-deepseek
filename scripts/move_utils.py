@@ -1,5 +1,10 @@
 import chess
 
+# TODO: Optimize to ~1880 legal moves only
+# Current: ~4600 (includes many impossible moves like 'a1a3' for a rook)
+# Benefit: ~2.5x smaller policy head, faster training, and smaller model size.
+# See for reference: https://github.com/official-stockfish/Stockfish/discussions/4231
+
 def _get_all_possible_moves():
     """
     Generates a comprehensive list of all possible UCI moves in chess.
@@ -40,17 +45,16 @@ POLICY_OUTPUT_SIZE = len(ALL_POSSIBLE_MOVES)
 def uci_to_index(uci_move: str) -> int:
     """
     Converts a UCI move string to its corresponding integer index.
-    Returns a default index (0) if the move is not in the mapping.
+    Raises KeyError if the move is not found in the mapping.
     """
-    return MOVE_TO_INDEX.get(uci_move, 0)
+    return MOVE_TO_INDEX[uci_move]
 
 def index_to_uci(index: int) -> str:
     """
     Converts an integer index back to its UCI move string.
+    Raises IndexError if the index is out of bounds.
     """
-    if 0 <= index < len(ALL_POSSIBLE_MOVES):
-        return ALL_POSSIBLE_MOVES[index]
-    return "" # Return empty string for invalid index
+    return ALL_POSSIBLE_MOVES[index]
 
 if __name__ == '__main__':
     print("--- Testing Move Utilities ---")

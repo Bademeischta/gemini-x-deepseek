@@ -1,7 +1,7 @@
 
 import torch
 import os
-from .model import RCNModel
+from scripts.model import RCNModel
 
 def create_dummy_model():
     """
