@@ -1,27 +1,43 @@
+
 import torch
 import os
-from scripts.model import RCNModel
-
-# Pfad, an dem die Engine das Modell erwartet
-MODEL_PATH = "models/rcn_model.pth"
+from model import RCNModel
 
 def create_dummy_model():
     """
-    Initialisiert ein RCNModel mit zufälligen Gewichten und speichert es,
-    um die Entwicklung der Engine zu ermöglichen, bevor das Training abgeschlossen ist.
+    Creates and saves a dummy RCN model with random weights.
+
+    This is useful for development and testing when a fully trained model is not
+    yet available, allowing other parts of the system (like the engine) to be
+    built and tested independently.
     """
-    print("Erstelle ein untrainiertes Dummy-Modell für Entwicklungszwecke...")
+    print("Creating a dummy RCN model with random initial weights...")
 
-    # 1. Sicherstellen, dass das Verzeichnis existiert
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+    # Ensure the models directory exists
+    model_dir = "models"
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+        print(f"Created directory: {model_dir}")
 
-    # 2. Modell instanziieren
-    model = RCNModel()
+    # Instantiate the model from the model definition
+    # The model parameters (e.g., in_channels) should match the real model
+    # For this dummy version, we can use default or placeholder values.
+    dummy_model = RCNModel(
+        in_channels=6,  # Standard feature count: piece type, color, coords etc.
+        hidden_channels=128,
+        num_heads=4,
+        num_layers=6
+    )
 
-    # 3. Modellgewichte speichern
-    torch.save(model.state_dict(), MODEL_PATH)
+    # The model is initialized with random weights by default in PyTorch
 
-    print(f"Dummy-Modell erfolgreich gespeichert unter: {MODEL_PATH}")
+    model_path = os.path.join(model_dir, "rcn_model.pth")
+    try:
+        torch.save(dummy_model.state_dict(), model_path)
+        print(f"Successfully saved dummy model to: {model_path}")
+    except Exception as e:
+        print(f"Error saving the dummy model: {e}")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
+    # This allows the script to be run directly for verification
     create_dummy_model()
