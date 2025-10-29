@@ -1,7 +1,7 @@
 
 import torch
 import os
-from model import RCNModel
+from .model import RCNModel
 
 def create_dummy_model():
     """
@@ -19,15 +19,9 @@ def create_dummy_model():
         os.makedirs(model_dir)
         print(f"Created directory: {model_dir}")
 
-    # Instantiate the model from the model definition
-    # The model parameters (e.g., in_channels) should match the real model
-    # For this dummy version, we can use default or placeholder values.
-    dummy_model = RCNModel(
-        in_channels=6,  # Standard feature count: piece type, color, coords etc.
-        hidden_channels=128,
-        num_heads=4,
-        num_layers=6
-    )
+    # Instantiate the model from the model definition.
+    # The constructor takes no arguments.
+    dummy_model = RCNModel()
 
     # The model is initialized with random weights by default in PyTorch
 
