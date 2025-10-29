@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from scripts.model import RCNModel
 from scripts.graph_utils import fen_to_graph_data
+from scripts.move_utils import uci_to_index
 
 # Configure logging
 logging.basicConfig(filename='engine.log', level=logging.DEBUG,
@@ -49,42 +50,139 @@ class Searcher:
         self.model.to(self.device)
         self.model.eval()
 
-    def search(self, board, depth):
+    def _evaluate(self, board):
         """
-        Finds the best move using a 1-ply search based on the model's value output.
+        Evaluates a single board position using the RCN model.
         """
-        best_move = None
-        # Use -infinity for white's turn and +infinity for black's turn
-        best_eval = -float('inf') if board.turn == chess.WHITE else float('inf')
+        graph_data = fen_to_graph_data(board.fen()).to(self.device)
+        with torch.no_grad():
+            output = self.model(graph_data)
+            return output['value'].item()
 
-        for move in board.legal_moves:
-            # Create a copy of the board and make the move
+    def _quiescence_search(self, board, alpha, beta, depth):
+        """
+        Performs a search extension for capture moves to stabilize the evaluation.
+        """
+        stand_pat = self._evaluate(board)
+
+        if depth == 0:
+            return stand_pat
+
+        if board.turn == chess.WHITE:
+            if stand_pat >= beta:
+                return beta
+            alpha = max(alpha, stand_pat)
+        else:
+            if stand_pat <= alpha:
+                return alpha
+            beta = min(beta, stand_pat)
+
+        # Generate only capture moves
+        capture_moves = [move for move in board.legal_moves if board.is_capture(move)]
+
+        for move in capture_moves:
             temp_board = board.copy()
             temp_board.push(move)
+            score = self._quiescence_search(temp_board, alpha, beta, depth - 1)
 
-            # Convert the resulting position to a graph
-            graph_data = fen_to_graph_data(temp_board.fen())
-            graph_data = graph_data.to(self.device)
+            if board.turn == chess.WHITE:
+                alpha = max(alpha, score)
+                if alpha >= beta:
+                    return beta  # Pruning
+            else:
+                beta = min(beta, score)
+                if beta <= alpha:
+                    return alpha  # Pruning
 
-            # Get the model's evaluation
+        return alpha if board.turn == chess.WHITE else beta
+
+    def _get_ordered_moves(self, board):
+        """
+        Gets all legal moves and sorts them based on the policy head output.
+        """
+        graph_data = fen_to_graph_data(board.fen()).to(self.device)
+        with torch.no_grad():
+            output = self.model(graph_data)
+            policy_logits = output['policy']
+
+        legal_moves = list(board.legal_moves)
+        move_scores = [policy_logits[0, uci_to_index(m.uci())].item() for m in legal_moves]
+
+        # Sort moves by their scores in descending order
+        sorted_moves = [move for _, move in sorted(zip(move_scores, legal_moves), reverse=True)]
+        return sorted_moves
+
+    def _ir_alpha_beta(self, board, depth, alpha, beta):
+        if depth == 0:
+            # At leaf nodes, enter quiescence search
+            graph_data = fen_to_graph_data(board.fen()).to(self.device)
             with torch.no_grad():
                 output = self.model(graph_data)
-                eval = output['value'].item()
 
-            # Log the evaluation for debugging
-            log_command("SEARCH_INFO", f"Move: {move.uci()}, Eval: {eval:.4f}")
+            tactic_flag = output['tactic'].item()
+            max_q_depth = 4
+            if tactic_flag > 0.5:
+                max_q_depth += 2 # Extend search in sharp positions
 
-            # Compare evaluations
-            if board.turn == chess.WHITE:
-                if eval > best_eval:
-                    best_eval = eval
+            return self._quiescence_search(board, alpha, beta, max_q_depth)
+
+        ordered_moves = self._get_ordered_moves(board)
+
+        if board.turn == chess.WHITE:
+            max_eval = -float('inf')
+            for move in ordered_moves:
+                temp_board = board.copy()
+                temp_board.push(move)
+                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break  # Beta cutoff
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in ordered_moves:
+                temp_board = board.copy()
+                temp_board.push(move)
+                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break  # Alpha cutoff
+            return min_eval
+
+    def search(self, board, depth):
+        """
+        Entry point for the IR-AB search.
+        """
+        best_move = None
+        alpha = -float('inf')
+        beta = float('inf')
+
+        ordered_moves = self._get_ordered_moves(board)
+
+        if board.turn == chess.WHITE:
+            max_eval = -float('inf')
+            for move in ordered_moves:
+                temp_board = board.copy()
+                temp_board.push(move)
+                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta)
+                if eval > max_eval:
+                    max_eval = eval
                     best_move = move
-            else: # Black's turn
-                if eval < best_eval:
-                    best_eval = eval
+                alpha = max(alpha, eval)
+        else:
+            min_eval = float('inf')
+            for move in ordered_moves:
+                temp_board = board.copy()
+                temp_board.push(move)
+                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta)
+                if eval < min_eval:
+                    min_eval = eval
                     best_move = move
+                beta = min(beta, eval)
 
-        log_command("SEARCH_RESULT", f"Best move: {best_move.uci() if best_move else 'None'}, Final Eval: {best_eval:.4f}")
+        log_command("SEARCH_RESULT", f"Best move: {best_move.uci() if best_move else 'None'}")
         return best_move
 
 def main():
@@ -121,7 +219,7 @@ def main():
             handle_position(parts[1:], board)
         elif command == "go":
             if searcher:
-                handle_go(board, searcher)
+                handle_go(parts, board, searcher)
             else:
                 log_command("ENGINE_ERROR", "Received 'go' command before 'uci' or after failed init.")
         elif command == "quit":
@@ -147,10 +245,18 @@ def handle_position(parts, board):
     except Exception as e:
         logging.error(f"Error handling 'position' command: {parts} - {e}")
 
-def handle_go(board, searcher):
+def handle_go(parts, board, searcher):
     """Handles the 'go' UCI command by calling the searcher."""
-    # For now, we use a fixed depth of 1, as requested.
-    best_move = searcher.search(board, depth=1)
+    depth = 4  # Default depth
+    if "depth" in parts:
+        try:
+            depth_index = parts.index("depth") + 1
+            if depth_index < len(parts):
+                depth = int(parts[depth_index])
+        except (ValueError, IndexError):
+            log_command("ENGINE_ERROR", f"Could not parse depth from 'go' command: {parts}")
+
+    best_move = searcher.search(board, depth=depth)
 
     if best_move:
         send_command(f"bestmove {best_move.uci()}")
