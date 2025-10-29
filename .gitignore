@@ -1,3 +1,8 @@
 data/
 *.log
 *.txt
+models/
+
+# Python cache files
+__pycache__/
+*.pyc
