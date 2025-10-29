@@ -1,127 +1,95 @@
 import torch
-import pandas as pd
 import json
+import os
 from torch_geometric.data import Dataset
 from scripts.graph_utils import fen_to_graph_data
-import os
+from scripts.move_utils import uci_to_index
 
 class ChessGraphDataset(Dataset):
     """
-    Custom PyTorch Geometric Dataset to load chess positions from .jsonl files,
-    convert FEN strings to graphs, and attach target labels.
+    A memory-efficient PyTorch Geometric Dataset for chess positions.
+    It reads .jsonl files line by line by indexing the file offsets,
+    avoiding loading the entire dataset into memory.
     """
     def __init__(self, jsonl_paths: list, transform=None, pre_transform=None):
-        """
-        Args:
-            jsonl_paths (list): A list of paths to the .jsonl data files.
-        """
         super().__init__(None, transform, pre_transform)
-        self.data_list = self._load_data(jsonl_paths)
+        self.file_handles = [open(path, 'r') for path in jsonl_paths if os.path.exists(path)]
+        self.line_offsets = self._index_files()
 
-    def _load_data(self, jsonl_paths):
-        """Loads and concatenates data from multiple .jsonl files."""
-        data_frames = []
-        for path in jsonl_paths:
-            if os.path.exists(path):
-                try:
-                    df = pd.read_json(path, lines=True)
-                    data_frames.append(df)
-                except ValueError:
-                    print(f"Warning: Could not parse {path}. It might be empty or malformed.")
-            else:
-                print(f"Warning: Data file not found at {path}. Skipping.")
-
-        if not data_frames:
-            # Return an empty dataframe if no data could be loaded
-            return pd.DataFrame()
-
-        # Concatenate all dataframes into one
-        concatenated_df = pd.concat(data_frames, ignore_index=True)
-        # Convert dataframe to a list of dictionaries for faster access
-        return concatenated_df.to_dict('records')
+    def _index_files(self):
+        """Creates an index of (file_handle_index, offset) for each line."""
+        offsets = []
+        for i, f in enumerate(self.file_handles):
+            f.seek(0)
+            offset = f.tell()
+            for line in f:
+                offsets.append((i, offset))
+                offset = f.tell()
+        return offsets
 
     def len(self):
-        """Returns the total number of samples in the dataset."""
-        return len(self.data_list)
+        return len(self.line_offsets)
 
     def get(self, idx):
         """
-        Gets a single data sample, converts its FEN to a graph, and attaches labels.
+        Gets a single data sample by seeking to its offset, converting its FEN
+        to a graph, and attaching pre-processed labels.
         """
-        # 1. Get the data record (FEN, value, policy, etc.)
-        data_record = self.data_list[idx]
+        file_idx, offset = self.line_offsets[idx]
+        f = self.file_handles[file_idx]
+        f.seek(offset)
+        line = f.readline()
+        data_record = json.loads(line)
 
-        # 2. Convert the FEN string to a graph data object
-        fen = data_record['fen']
-        graph_data = fen_to_graph_data(fen)
+        # Convert FEN to graph
+        graph_data = fen_to_graph_data(data_record['fen'])
 
-        # 3. Attach the target labels to the graph object
-        # The main target for Graph Neural Networks is often `y`
+        # Attach pre-processed target labels
         graph_data.y = torch.tensor([data_record.get('value', 0.0)], dtype=torch.float32)
-
-        # Attach other labels as attributes
+        graph_data.policy_target = torch.tensor(uci_to_index(data_record.get('policy_target', '')), dtype=torch.long)
         graph_data.tactic_flag = torch.tensor([data_record.get('tactic_flag', 0.0)], dtype=torch.float32)
         graph_data.strategic_flag = torch.tensor([data_record.get('strategic_flag', 0.0)], dtype=torch.float32)
 
-        # For policy, we will handle the UCI string to index mapping in the training loop
-        # as it can be complex and depends on the final model output layer.
-        graph_data.policy_target = data_record.get('policy_target', '')
-
         return graph_data
 
+    def __del__(self):
+        """Ensures file handles are closed when the object is destroyed."""
+        for f in self.file_handles:
+            f.close()
+
 if __name__ == '__main__':
-    print("--- Testing ChessGraphDataset ---")
+    print("--- Testing Memory-Efficient ChessGraphDataset ---")
 
-    # Create dummy .jsonl files for testing
-    dummy_data_puzzles = [
-        {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "value": 0.1, "policy_target": "e2e4", "tactic_flag": 1.0, "strategic_flag": 0.0},
-        {"fen": "r1bqkbnr/pp1ppppp/2n5/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3", "value": 0.2, "policy_target": "f1b5", "tactic_flag": 1.0, "strategic_flag": 0.0}
+    # Create dummy .jsonl files
+    dummy_data = [
+        {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "value": 0.1, "policy_target": "e2e4", "tactic_flag": 1.0},
+        {"fen": "r1b2rk1/pp1p1p1p/1qn2np1/4p3/4P3/1N1B1N2/PPPQ1PPP/R3K2R b KQ - 1 11", "value": -0.5, "policy_target": "a7a5", "strategic_flag": 1.0}
     ]
-    dummy_data_strategic = [
-        {"fen": "r1b2rk1/pp1p1p1p/1qn2np1/4p3/4P3/1N1B1N2/PPPQ1PPP/R3K2R b KQ - 1 11", "value": -0.5, "policy_target": "a7a5", "tactic_flag": 0.0, "strategic_flag": 1.0}
-    ]
+    test_path = "test_data.jsonl"
+    with open(test_path, 'w') as f:
+        for item in dummy_data:
+            f.write(json.dumps(item) + '\n') # Correct newline character
 
-    puzzle_path = "dummy_puzzles.jsonl"
-    strategic_path = "dummy_strategic.jsonl"
+    # Test dataset
+    dataset = ChessGraphDataset(jsonl_paths=[test_path, "non_existent_file.jsonl"])
+    print(f"Dataset created successfully. Length: {len(dataset)}")
+    assert len(dataset) == 2
 
-    with open(puzzle_path, 'w') as f:
-        for item in dummy_data_puzzles:
-            f.write(json.dumps(item) + '\\n')
+    # Test `get` method for the second sample
+    sample = dataset.get(1)
+    print(f"\nTesting sample 1: {sample}")
 
-    with open(strategic_path, 'w') as f:
-        for item in dummy_data_strategic:
-            f.write(json.dumps(item) + '\\n')
+    assert sample.y.item() == -0.5
+    assert sample.policy_target.item() == uci_to_index("a7a5")
+    assert sample.strategic_flag.item() == 1.0
+    # Check for tactic_flag which is missing in the record, should default to 0.0
+    assert 'tactic_flag' in sample
+    assert sample.tactic_flag.item() == 0.0
+    print("\nLabel attachment and default values are correct.")
 
-    # --- Test Dataset Initialization ---
-    dataset = ChessGraphDataset(jsonl_paths=[puzzle_path, strategic_path, "non_existent_file.jsonl"])
+    print("\nAll tests passed!")
 
-    print(f"Dataset created successfully.")
-    print(f"Total number of samples: {len(dataset)}")
-    assert len(dataset) == 3
-
-    # --- Test `get` method ---
-    print("\\n--- Testing get(idx=2) ---")
-    third_sample = dataset.get(2)
-    print(f"Graph object: {third_sample}")
-
-    # Verify attached labels
-    assert 'y' in third_sample
-    assert 'tactic_flag' in third_sample
-    assert 'strategic_flag' in third_sample
-    assert 'policy_target' in third_sample
-
-    print(f"Value (y): {third_sample.y.item():.2f}")
-    print(f"Tactic Flag: {third_sample.tactic_flag.item()}")
-    print(f"Strategic Flag: {third_sample.strategic_flag.item()}")
-    print(f"Policy Target (UCI): {third_sample.policy_target}")
-
-    assert third_sample.y.item() == -0.5
-    assert third_sample.strategic_flag.item() == 1.0
-    assert third_sample.policy_target == "a7a5"
-
-    print("\\nAll tests passed!")
-
-    # --- Cleanup ---
-    os.remove(puzzle_path)
-    os.remove(strategic_path)
-    print("\\nCleaned up dummy files.")
+    # Cleanup
+    del dataset # Explicitly delete to trigger __del__ for file closing
+    os.remove(test_path)
+    print("\nCleaned up dummy files.")
