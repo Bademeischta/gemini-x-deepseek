@@ -16,15 +16,15 @@ Das System basiert auf drei Säulen:
 -   [x] **Phase 0: Konzeption**
     -   [x] Entwicklung des Gesamtkonzepts (KKK, RCN, IR-AB)
 -   [ ] **Phase 1: Prototyping**
-    -   [ ] **Arbeitspaket 1.1: Daten-Pipeline (Puzzles)**
+    -   [x] **Arbeitspaket 1.1: Daten-Pipeline (Puzzles)**
         -   [x] Skript `process_puzzles.py` zur Erstellung des taktischen Datensatz-Subsets aus der Lichess Puzzle DB
-    -   [ ] **Arbeitspaket 1.2: Daten-Pipeline (Strategie)**
-        -   [ ] Skript `process_elite_games.py` zur Erstellung des strategischen Datensatz-Subsets aus der Lichess Elite DB
+    -   [x] **Arbeitspaket 1.2: Daten-Pipeline (Strategie)**
+        -   [x] Skript `process_elite_games.py` zur Erstellung des strategischen Datensatz-Subsets aus der Lichess Elite DB
     -   [x] **Arbeitspaket 1.3: RCN-Modell Implementierung**
         -   [x] Definition der Graphen-Struktur in PyTorch Geometric
         -   [x] Implementierung des Multi-Task-Modells (Value, Policy, Tactic, Strategic Heads)
-    -   [ ] **Arbeitspaket 1.4: Training & Validierung**
-        -   [ ] Trainings-Loop für das RCN-Modell
+    -   [x] **Arbeitspaket 1.4: Training & Validierung**
+        -   [x] Trainings-Loop für das RCN-Modell
         -   [ ] Validierung der Konvergenz auf dem KKK-Subset
 -   [ ] **Phase 2: Inferenz-Implementierung**
     -   [ ] Implementierung des IR-AB Suchalgorithmus
@@ -38,17 +38,37 @@ Das System basiert auf drei Säulen:
 
 Die Konzeption ist abgeschlossen. Wir befinden uns in **Phase 1 (Prototyping)**.
 
-Die Daten-Pipelines (`1.1`, `1.2`) und die grundlegende Modellarchitektur (`1.3`) sind nun vollständig implementiert. Wir beginnen mit **Arbeitspaket 1.4**, der Implementierung der Trainings-Infrastruktur, die unsere FEN-basierten Datensätze in Graphen umwandelt und für das Training vorbereitet.
+Die Daten-Pipelines (`1.1`, `1.2`), die Modellarchitektur (`1.3`) sowie die vollständige Trainings- und Validierungsinfrastruktur (`1.4`) sind nun implementiert. Das Skript `train.py` führt alle Komponenten zusammen und ermöglicht das Training des RCN-Modells auf dem KKK-Datensatz. Phase 1, das Prototyping, nähert sich damit dem Abschluss.
 
 ## Nutzung
 
-### Erstellung des taktischen Datensatzes
+### 1. Erstellung der Datensätze
+
+#### Taktischer Datensatz
 
 1.  Stellen Sie sicher, dass Python 3.8+ und die erforderlichen Bibliotheken (`requests`, `python-chess`) installiert sind.
 2.  Führen Sie das Skript vom Hauptverzeichnis aus:
     ```bash
     python scripts/process_puzzles.py
     ```
-3.  Das Skript wird die Lichess Puzzle-Datenbank (ca. 3 GB) automatisch herunterladen und in das `data/`-Verzeichnis entpacken. Dieser Schritt kann einige Zeit dauern.
-4.  Anschließend werden die Daten verarbeitet. Der Fortschritt wird auf der Konsole ausgegeben.
-5.  **Ergebnis:** Eine Datei `data/kkk_subset_puzzles.jsonl` wird erstellt, die bis zu 1 Million validierte, taktische Schachpositionen im JSON-Lines-Format enthält. Eine `error_log.txt` wird für alle fehlerhaften Zeilen erstellt.
+3.  **Ergebnis:** Eine Datei `data/kkk_subset_puzzles.jsonl` wird erstellt.
+
+#### Strategischer Datensatz
+
+1.  Stellen Sie sicher, dass Python 3.8+ und die erforderlichen Bibliotheken (`requests`, `python-chess`, `zstandard`) installiert sind.
+2.  Führen Sie das Skript vom Hauptverzeichnis aus:
+    ```bash
+    python scripts/process_elite_games.py
+    ```
+3.  **Ergebnis:** Eine Datei `data/kkk_subset_strategic.jsonl` wird erstellt.
+
+### 2. Training des Modells
+
+1.  Stellen Sie sicher, dass die Datensätze aus Schritt 1 generiert wurden und sich in `data/` befinden.
+2.  Installieren Sie die zusätzlichen ML-Bibliotheken: `torch`, `torch-geometric`.
+3.  Starten Sie das Training:
+    ```bash
+    python train.py
+    ```
+4.  Das Skript lädt die Datensätze, teilt sie in Trainings- und Validierungs-Sets auf und beginnt den Trainingsprozess. Der Fortschritt wird auf der Konsole ausgegeben.
+5.  **Ergebnis:** Das beste Modell wird kontinuierlich in `models/rcn_model.pth` gespeichert, basierend auf dem niedrigsten Validierungsverlust.
