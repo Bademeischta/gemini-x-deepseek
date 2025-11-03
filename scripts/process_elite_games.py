@@ -53,6 +53,7 @@ def process_games():
     # Step 2: Process the PGN stream
     positions_found = 0
     games_processed = 0
+    unique_fens = set()
     print(f"Processing stream from {zst_path}...")
 
     # The core change: stream processing
@@ -87,14 +88,17 @@ def process_games():
                             board.push(move)
 
                             if MIN_MOVE_NUM <= move_num <= MAX_MOVE_NUM:
-                                data_point = {
-                                    "fen": board.fen(),
-                                    "strategic_flag": 1.0,
-                                    "tactic_flag": 0.0
-                                }
-                                f_out.write(json.dumps(data_point) + '\n')
-                                positions_found += 1
-                                pbar.update(1)
+                                fen = board.fen()
+                                if fen not in unique_fens:
+                                    unique_fens.add(fen)
+                                    data_point = {
+                                        "fen": fen,
+                                        "strategic_flag": 1.0,
+                                        "tactic_flag": 0.0
+                                    }
+                                    f_out.write(json.dumps(data_point) + '\n')
+                                    positions_found += 1
+                                    pbar.update(1)
 
                             if positions_found >= TARGET_POSITIONS:
                                 break

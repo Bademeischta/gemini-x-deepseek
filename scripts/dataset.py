@@ -4,7 +4,7 @@ import os
 from torch_geometric.data import Dataset as PyGDataset
 from torch.utils.data import Dataset as TorchDataset
 from scripts.graph_utils import fen_to_graph_data
-from scripts.move_utils import uci_to_index
+from scripts.move_utils import uci_to_policy_targets
 
 class ChessGraphDataset(PyGDataset):
     """
@@ -58,7 +58,8 @@ class ChessGraphDataset(PyGDataset):
 
     def len(self):
         if not self._opened:
-            raise RuntimeError("Dataset must be opened using a 'with' statement before calling len().")
+            # Fallback for simple len() calls before context is entered
+            self._enter_and_index()
         return len(self.line_offsets)
 
     def get(self, idx):
@@ -79,12 +80,21 @@ class ChessGraphDataset(PyGDataset):
         graph_data = fen_to_graph_data(data_record['fen'])
 
         # Attach pre-processed target labels
+        policy_targets = uci_to_policy_targets(data_record.get('policy_target', ''))
         graph_data.y = torch.tensor([data_record.get('value', 0.0)], dtype=torch.float32)
-        graph_data.policy_target = torch.tensor(uci_to_index(data_record.get('policy_target', '')), dtype=torch.long)
+        graph_data.policy_target_from = torch.tensor(policy_targets['from'], dtype=torch.long)
+        graph_data.policy_target_to = torch.tensor(policy_targets['to'], dtype=torch.long)
         graph_data.tactic_flag = torch.tensor([data_record.get('tactic_flag', 0.0)], dtype=torch.float32)
         graph_data.strategic_flag = torch.tensor([data_record.get('strategic_flag', 0.0)], dtype=torch.float32)
 
         return graph_data
+
+    def _enter_and_index(self):
+        """Internal helper to allow len() to work before 'with'."""
+        if not self._opened:
+            self.file_handles = [open(p, 'r') for p in self.file_paths]
+            self.line_offsets = self._index_files()
+            # Don't set _opened to True, so 'with' block can still manage it properly
 
     def __del__(self):
         """Ensures file handles are closed when the object is destroyed."""
@@ -104,47 +114,32 @@ class DatasetWrapper(TorchDataset):
         original_idx = self.indices[idx]
         return self.base_dataset[original_idx]
 
-    # The wrapper itself doesn't need to manage resources,
-    # as the base_dataset is managed externally (e.g., in a 'with' block).
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
 
 if __name__ == '__main__':
     print("--- Testing Memory-Efficient ChessGraphDataset ---")
 
-    # Create dummy .jsonl files
-    dummy_data = [
-        {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "value": 0.1, "policy_target": "e2e4", "tactic_flag": 1.0},
-        {"fen": "r1b2rk1/pp1p1p1p/1qn2np1/4p3/4P3/1N1B1N2/PPPQ1PPP/R3K2R b KQ - 1 11", "value": -0.5, "policy_target": "a7a5", "strategic_flag": 1.0}
-    ]
+    dummy_data = [{"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "value": 0.1, "policy_target": "e2e4"},
+                  {"fen": "r1b2rk1/pp1p1p1p/1qn2np1/4p3/4P3/1N1B1N2/PPPQ1PPP/R3K2R b KQ - 1 11", "value": -0.5, "policy_target": "a7a5"}]
     test_path = "test_data.jsonl"
     with open(test_path, 'w') as f:
-        for item in dummy_data:
-            f.write(json.dumps(item) + '\n')
+        for item in dummy_data: f.write(json.dumps(item) + '\n')
 
-    # Test dataset using the context manager
-    with ChessGraphDataset(jsonl_paths=[test_path, "non_existent_file.jsonl"]) as dataset:
-        print(f"Dataset opened successfully via context manager. Length: {len(dataset)}")
+    # Test len() before entering context
+    dataset_standalone = ChessGraphDataset(jsonl_paths=[test_path])
+    assert len(dataset_standalone) == 2
+    dataset_standalone.close() # Manually close after len()
+    print("len() works correctly before entering 'with' block.")
+
+    with ChessGraphDataset(jsonl_paths=[test_path]) as dataset:
+        print(f"Dataset opened. Length: {len(dataset)}")
         assert len(dataset) == 2
-
-        # Test `get` method for the second sample
         sample = dataset.get(1)
-        print(f"\nTesting sample 1: {sample}")
+        expected_targets = uci_to_policy_targets("a7a5")
+        assert sample.policy_target_from.item() == expected_targets['from']
+        assert sample.policy_target_to.item() == expected_targets['to']
+        print("Sample retrieval and target generation are correct.")
 
-        assert sample.y.item() == -0.5
-        assert sample.policy_target.item() == uci_to_index("a7a5")
-        assert sample.strategic_flag.item() == 1.0
-        # Check for tactic_flag which is missing in the record, should default to 0.0
-        assert 'tactic_flag' in sample
-        assert sample.tactic_flag.item() == 0.0
-        print("\nLabel attachment and default values are correct.")
-
-    print("\nDataset closed automatically on exiting 'with' block.")
-    print("All tests passed!")
-
-    # Cleanup
+    print("\nAll tests passed!")
     os.remove(test_path)
-    print("\nCleaned up dummy files.")

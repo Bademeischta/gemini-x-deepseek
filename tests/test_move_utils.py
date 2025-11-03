@@ -1,60 +1,35 @@
 import unittest
-from scripts.move_utils import uci_to_index, index_to_uci
+import chess
+from scripts.move_utils import uci_to_policy_targets, policy_targets_to_uci
 
 class TestMoveUtils(unittest.TestCase):
-    def test_uci_to_index_basic_moves(self):
-        """Tests if common UCI moves are converted to unique indices."""
-        move1 = "e2e4"
-        move2 = "e7e5"
-        move3 = "g1f3"
+    def test_uci_to_policy_targets(self):
+        """Tests conversion from UCI string to policy target indices."""
+        # Standard move
+        self.assertEqual(uci_to_policy_targets("e2e4"), {'from': chess.E2, 'to': chess.E4})
+        # Capture
+        self.assertEqual(uci_to_policy_targets("g1f3"), {'from': chess.G1, 'to': chess.F3})
+        # Promotion
+        self.assertEqual(uci_to_policy_targets("a7a8q"), {'from': chess.A7, 'to': chess.A8})
+        # Invalid move
+        self.assertEqual(uci_to_policy_targets("e2e9"), {'from': -1, 'to': -1})
+        # Empty string
+        self.assertEqual(uci_to_policy_targets(""), {'from': -1, 'to': -1})
 
-        index1 = uci_to_index(move1)
-        index2 = uci_to_index(move2)
-        index3 = uci_to_index(move3)
+    def test_policy_targets_to_uci_roundtrip(self):
+        """Tests the roundtrip conversion for various moves."""
+        board = chess.Board()
 
-        self.assertIsInstance(index1, int)
-        self.assertIsInstance(index2, int)
-        self.assertIsInstance(index3, int)
+        # Standard move
+        uci = "e2e4"
+        targets = uci_to_policy_targets(uci)
+        self.assertEqual(policy_targets_to_uci(targets['from'], targets['to'], board), uci)
 
-        self.assertNotEqual(index1, index2, "Different moves should have different indices")
-        self.assertNotEqual(index1, index3, "Different moves should have different indices")
-        self.assertNotEqual(index2, index3, "Different moves should have different indices")
-
-    def test_uci_to_index_promotion(self):
-        """Tests promotion moves."""
-        promo_q = "e7e8q"
-        promo_r = "e7e8r"
-
-        index_q = uci_to_index(promo_q)
-        index_r = uci_to_index(promo_r)
-
-        self.assertNotEqual(index_q, index_r, "Different promotion moves should have different indices")
-
-    def test_index_to_uci_roundtrip(self):
-        """Tests if converting a UCI to an index and back yields the original UCI."""
-        moves_to_test = ["a2a4", "b8c6", "f7f8q", "h1g1"]
-
-        for move in moves_to_test:
-            with self.subTest(move=move):
-                index = uci_to_index(move)
-                reconstructed_move = index_to_uci(index)
-                self.assertEqual(move, reconstructed_move, "Roundtrip conversion should yield the original move")
-
-    def test_invalid_uci_returns_zero(self):
-        """
-        Tests if an invalid UCI string returns the default index 0,
-        instead of raising an error.
-        """
-        invalid_uci = "e2e9" # Invalid square, guaranteed not in the move map
-        index = uci_to_index(invalid_uci)
-        self.assertEqual(index, 0, "Invalid UCI moves should return index 0")
-
-    def test_index_out_of_bounds_raises_error(self):
-        """Tests if an out-of-bounds index raises an IndexError."""
-        # Assuming the move space is smaller than 5000
-        invalid_index = 5000
-        with self.assertRaises(IndexError):
-            index_to_uci(invalid_index)
+        # Promotion move
+        board_promo = chess.Board("rnbqkbnr/pPpppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+        uci_promo = "b7a8q"
+        targets_promo = uci_to_policy_targets(uci_promo)
+        self.assertEqual(policy_targets_to_uci(targets_promo['from'], targets_promo['to'], board_promo), uci_promo)
 
 if __name__ == '__main__':
     unittest.main()
