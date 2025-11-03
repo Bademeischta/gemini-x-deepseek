@@ -5,6 +5,7 @@ import chess
 import bz2
 import requests
 import os
+import shutil
 
 def download_and_decompress(url, compressed_path, decompressed_path):
     """Downloads and decompresses the puzzle database."""
@@ -16,8 +17,8 @@ def download_and_decompress(url, compressed_path, decompressed_path):
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
         print(f"Decompressing {compressed_path}...", flush=True)
-        with bz2.open(compressed_path, "rb") as bz2f, open(decompressed_path, "wb") as f:
-            f.write(bz2f.read())
+        with bz2.open(compressed_path, 'rb') as bz2f, open(decompressed_path, 'wb') as f:
+            shutil.copyfileobj(bz2f, f)
         print("Decompression complete.", flush=True)
 
 input_file = 'data/puzzles.csv'
