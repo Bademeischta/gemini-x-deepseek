@@ -32,9 +32,10 @@ class Searcher:
     """
     Handles the AI logic for finding the best move.
     """
-    def __init__(self, model_path="models/rcn_model.pth"):
+    def __init__(self, model_path="models/rcn_model.pth", use_negamax=False):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         log_command("ENGINE_INFO", f"Using device: {self.device}")
+        self.use_negamax = use_negamax
 
         self.model = RCNModel()
         if not os.path.exists(model_path):
@@ -203,9 +204,19 @@ class Searcher:
                     break # Alpha cutoff
             return min_eval
 
-    def search(self, board, depth, time_limit):
+    def _search_negamax(self, board, depth, time_limit):
         """
-        Entry point for the search, using Iterative Deepening.
+        Placeholder for a future true Negamax search implementation.
+        """
+        log_command("ENGINE_ERROR", "Negamax search is not yet implemented.")
+        # Fallback to the first legal move
+        if list(board.legal_moves):
+            return list(board.legal_moves)[0]
+        return None
+
+    def _search_minmax(self, board, depth, time_limit):
+        """
+        The original Minimax-style search implementation.
         """
         start_time = time.time()
         self.nodes_searched = 0
@@ -214,39 +225,41 @@ class Searcher:
 
         for current_depth in range(1, depth + 1):
             try:
-                # Root level of the search for the current iteration
                 alpha = -float('inf')
                 beta = float('inf')
-
-                # Use PV from previous iteration for move ordering
                 ordered_moves = self._get_ordered_moves(board, pv_move=principal_variation[0] if principal_variation else None)
-
                 current_best_move = None
 
+                # This is the root move evaluation logic, specific to Minimax
+                # Note: The original implementation had a mix of Negamax and Minimax logic at the root.
+                # This has been corrected to be a standard search setup. The turn is checked inside _ir_alpha_beta.
                 for move in ordered_moves:
                     temp_board = board.copy()
                     temp_board.push(move)
-
-                    # Pass the rest of the PV to the search
                     child_pv = principal_variation[1:] if principal_variation and move == principal_variation[0] else []
-                    eval = self._ir_alpha_beta(temp_board, current_depth - 1, -beta, -alpha, child_pv, start_time, time_limit)
-                    eval = -eval # Negamax adjustment
 
-                    if eval > alpha:
-                        alpha = eval
-                        current_best_move = move
-                        # TODO: Reconstruct PV here if needed for deeper searches
+                    # Call the recursive search
+                    eval = self._ir_alpha_beta(temp_board, current_depth - 1, alpha, beta, child_pv, start_time, time_limit)
 
-                # After searching all root moves, update the best move for this iteration
+                    # Update best move based on the side to move
+                    if board.turn == chess.WHITE:
+                        if eval > alpha:
+                            alpha = eval
+                            current_best_move = move
+                    else: # Black's turn
+                        if eval < beta:
+                            beta = eval
+                            current_best_move = move
+
                 if current_best_move:
                     best_move = current_best_move
-                    # A proper PV reconstruction would be needed here for perfect move ordering.
-                    # For now, we just use the best move from the last iteration.
                     principal_variation = [best_move]
 
-                # UCI info output
                 elapsed_time = time.time() - start_time
-                score_cp = int(alpha * 100)
+                # The score perspective depends on whose move it is at the root.
+                # For UCI, 'cp' score is from the current player's perspective.
+                score = alpha if board.turn == chess.WHITE else beta
+                score_cp = int(score * 100)
                 pv_str = best_move.uci() if best_move else "none"
                 send_command(f"info depth {current_depth} score cp {score_cp} nodes {self.nodes_searched} time {int(elapsed_time * 1000)} pv {pv_str}")
 
@@ -255,6 +268,16 @@ class Searcher:
                 break
 
         log_command("SEARCH_RESULT", f"Best move: {best_move.uci() if best_move else 'None'} after {self.nodes_searched} nodes")
+        return best_move
+
+    def search(self, board, depth, time_limit):
+        """
+        Entry point for the search. Dispatches to the selected search algorithm.
+        """
+        if self.use_negamax:
+            best_move = self._search_negamax(board, depth, time_limit)
+        else:
+            best_move = self._search_minmax(board, depth, time_limit)
 
         # Fallback if no legal moves are available at the start
         if not best_move and list(board.legal_moves):
