@@ -92,6 +92,8 @@ def train():
 
                 loss = loss_v + loss_p + loss_t + loss_s
                 loss.backward()
+                # Gradient Clipping to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
 
                 train_losses['total'] += loss.item()

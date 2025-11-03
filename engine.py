@@ -71,10 +71,10 @@ class Searcher:
         """
         Performs a search extension for capture moves to stabilize the evaluation.
         """
-        stand_pat = self._evaluate(board)
-
         if depth == 0:
-            return stand_pat
+            return self._evaluate(board)
+
+        stand_pat = self._evaluate(board)
 
         if board.turn == chess.WHITE:
             if stand_pat >= beta:
@@ -156,12 +156,15 @@ class Searcher:
         self.nodes_searched += 1
 
         if depth == 0:
-            return self._quiescence_search(board, alpha, beta, 4) # Quiescence search at leaf
+            # Quiescence search doesn't return a move, only an evaluation.
+            return self._quiescence_search(board, alpha, beta, 4), None
 
         if board.is_game_over(claim_draw=True):
             if board.is_checkmate():
-                return -float('inf')  # A mate found against us is very bad
-            return 0 # Draw
+                # The move that led to this state was the winning one for the opponent.
+                # From this position, there is no best move.
+                return -float('inf'), None
+            return 0, None # Draw
 
         # Get the PV move for the current position from the main pv_line
         current_pv_move = pv_line[0] if pv_line else None
@@ -176,7 +179,7 @@ class Searcher:
                 temp_board.push(move)
 
                 child_pv = pv_line[1:] if current_pv_move == move and pv_line else []
-                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta, child_pv, start_time, time_limit)
+                eval, _ = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta, child_pv, start_time, time_limit)
 
                 if eval > max_eval:
                     max_eval = eval
@@ -185,7 +188,7 @@ class Searcher:
                 alpha = max(alpha, eval)
                 if beta <= alpha:
                     break # Beta cutoff
-            return max_eval
+            return max_eval, best_move_found
         else:
             min_eval = float('inf')
             for move in ordered_moves:
@@ -193,7 +196,7 @@ class Searcher:
                 temp_board.push(move)
 
                 child_pv = pv_line[1:] if current_pv_move == move and pv_line else []
-                eval = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta, child_pv, start_time, time_limit)
+                eval, _ = self._ir_alpha_beta(temp_board, depth - 1, alpha, beta, child_pv, start_time, time_limit)
 
                 if eval < min_eval:
                     min_eval = eval
@@ -202,7 +205,7 @@ class Searcher:
                 beta = min(beta, eval)
                 if beta <= alpha:
                     break # Alpha cutoff
-            return min_eval
+            return min_eval, best_move_found
 
     def _search_negamax(self, board, depth, time_limit):
         """
@@ -230,30 +233,35 @@ class Searcher:
                 ordered_moves = self._get_ordered_moves(board, pv_move=principal_variation[0] if principal_variation else None)
                 current_best_move = None
 
-                # This is the root move evaluation logic, specific to Minimax
-                # Note: The original implementation had a mix of Negamax and Minimax logic at the root.
-                # This has been corrected to be a standard search setup. The turn is checked inside _ir_alpha_beta.
+                # This is the root move evaluation logic for Minimax.
+                current_pv = []
                 for move in ordered_moves:
                     temp_board = board.copy()
                     temp_board.push(move)
+
+                    # The PV for the child node is what follows the current move in the PV from the last iteration.
                     child_pv = principal_variation[1:] if principal_variation and move == principal_variation[0] else []
 
-                    # Call the recursive search
-                    eval = self._ir_alpha_beta(temp_board, current_depth - 1, alpha, beta, child_pv, start_time, time_limit)
+                    # Call the recursive search, which now returns (eval, best_move_from_child)
+                    eval, best_move_from_child = self._ir_alpha_beta(temp_board, current_depth - 1, alpha, beta, child_pv, start_time, time_limit)
 
                     # Update best move based on the side to move
                     if board.turn == chess.WHITE:
                         if eval > alpha:
                             alpha = eval
                             current_best_move = move
+                            # Reconstruct the PV: current move + PV from the child node
+                            current_pv = [current_best_move] + ([best_move_from_child] if best_move_from_child else [])
                     else: # Black's turn
                         if eval < beta:
                             beta = eval
                             current_best_move = move
+                            # Reconstruct the PV
+                            current_pv = [current_best_move] + ([best_move_from_child] if best_move_from_child else [])
 
                 if current_best_move:
                     best_move = current_best_move
-                    principal_variation = [best_move]
+                    principal_variation = current_pv # Update the main PV for the next iteration
 
                 elapsed_time = time.time() - start_time
                 # The score perspective depends on whose move it is at the root.
@@ -288,7 +296,8 @@ class Searcher:
 def main():
     """Main UCI communication loop."""
     board = chess.Board()
-    searcher = None  # Initialize searcher to None
+    searcher = None
+    is_initialized = False
 
     while True:
         line = sys.stdin.readline()
@@ -302,26 +311,39 @@ def main():
         if command == "uci":
             send_command("id name RCN Engine")
             send_command("id author Jules")
-            # Instantiate the searcher here, after UCI handshake
-            try:
-                searcher = Searcher()
-            except Exception as e:
-                log_command("ENGINE_ERROR", f"Failed to initialize Searcher: {e}")
-                # We can't continue if the model fails to load.
-                break
+            # Instantiate the searcher in a controlled way.
+            # The 'isready' command will confirm when it's done.
+            if not searcher:
+                try:
+                    # Heavy model loading happens here
+                    searcher = Searcher()
+                    is_initialized = True
+                except Exception as e:
+                    log_command("ENGINE_ERROR", f"Failed to initialize Searcher: {e}")
+                    # In case of error, we cannot proceed.
+                    break
             send_command("uciok")
+
         elif command == "isready":
-            # Model loading is now part of Searcher's __init__
-            send_command("readyok")
+            # Only send 'readyok' if the searcher (and model) are fully loaded.
+            if is_initialized and searcher:
+                send_command("readyok")
+            else:
+                log_command("ENGINE_WARNING", "Received 'isready' command but engine is not initialized yet.")
+
         elif command == "ucinewgame":
             board.reset()
+
         elif command == "position":
             handle_position(parts[1:], board)
+
         elif command == "go":
+            # The check for 'is_initialized' is implicitly handled by 'searcher' being non-None.
             if searcher:
                 handle_go(parts, board, searcher)
             else:
-                log_command("ENGINE_ERROR", "Received 'go' command before 'uci' or after failed init.")
+                log_command("ENGINE_ERROR", "Received 'go' command before engine was ready.")
+
         elif command == "quit":
             break
 
@@ -345,44 +367,45 @@ def handle_position(parts, board):
     except Exception as e:
         logging.error(f"Error handling 'position' command: {parts} - {e}")
 
-def calculate_search_time(wtime, btime, winc, binc, movestogo, side_to_move):
+def calculate_search_time(wtime, btime, winc, binc, movestogo, side_to_move) -> int:
     """
-    Calculates the optimal search time based on UCI parameters.
-    This is a simplified version of common time management algorithms.
-    All time values are in milliseconds.
+    Calculates the optimal search time based on UCI parameters, working
+    internally with integers (milliseconds) to avoid floating-point errors.
+    Returns the allocated time in milliseconds.
     """
     time_left_ms = wtime if side_to_move == chess.WHITE else btime
     increment_ms = winc if side_to_move == chess.WHITE else binc
 
-    # Convert to seconds for calculation
-    time_left = time_left_ms / 1000.0
-    increment = increment_ms / 1000.0
+    allocated_time_ms = 0
 
-    allocated_time = 0.0
-
-    # If movestogo is provided, it's a classical time control
     if movestogo and movestogo > 0:
-        # Use a portion of the time remaining for the next control
-        allocated_time = (time_left / movestogo) + (increment * 0.8)
+        # Classical time control: divide remaining time by moves to go.
+        allocated_time_ms = (time_left_ms // movestogo) + (increment_ms * 8 // 10)
     else:
-        # Otherwise, it's a sudden death or Fischer time control
-        # Use a fraction of the remaining time plus most of the increment
-        allocated_time = (time_left / 25) + (increment * 0.9)
+        # Sudden death: use a fraction of the remaining time.
+        # Use a larger fraction for shorter time controls.
+        divider = 25 if time_left_ms > 20000 else 15
+        allocated_time_ms = (time_left_ms // divider) + (increment_ms * 9 // 10)
 
-    # Safety buffer: never use more than 80% of the remaining time for a single move
-    max_time = time_left * 0.8
+    # Safety buffer: never use more than 80% of the remaining time.
+    max_time_ms = time_left_ms * 8 // 10
 
-    # Ensure we have a minimum time to think, e.g., 50ms
-    min_time = 0.05
+    # Ensure a minimum thinking time, e.g., 50ms, but not more than available.
+    min_time_ms = 50
 
-    # Clamp the allocated time between the min and max values
-    return max(min_time, min(allocated_time, max_time))
+    # Clamp the allocated time between min and max, ensuring we don't exceed max_time.
+    # Also, ensure we don't use more time than we have.
+    final_time_ms = max(min_time_ms, min(allocated_time_ms, max_time_ms))
+
+    # Final check to ensure we don't allocate more time than we have left
+    return min(final_time_ms, time_left_ms)
+
 
 def handle_go(parts, board, searcher):
     """Handles the 'go' UCI command by calling the searcher."""
     # Default values
     depth = 100  # Set a high depth limit for timed searches
-    time_limit = None
+    time_limit_ms = None # Time limit is now in milliseconds
 
     # --- Parse UCI 'go' parameters ---
     params = {}
@@ -400,7 +423,7 @@ def handle_go(parts, board, searcher):
 
     # --- Time Management ---
     if "wtime" in params and "btime" in params:
-        time_limit = calculate_search_time(
+        time_limit_ms = calculate_search_time(
             params.get("wtime", 0),
             params.get("btime", 0),
             params.get("winc", 0),
@@ -408,19 +431,20 @@ def handle_go(parts, board, searcher):
             params.get("movestogo"), # Can be None
             board.turn
         )
-        log_command("ENGINE_INFO", f"Time control active. Search time: {time_limit:.3f}s")
+        log_command("ENGINE_INFO", f"Time control active. Search time: {time_limit_ms / 1000:.3f}s")
     elif "depth" in params:
         depth = params["depth"]
-        time_limit = None # No time limit for fixed depth search
+        time_limit_ms = None # No time limit for fixed depth search
         log_command("ENGINE_INFO", f"Fixed depth search: {depth}")
     else:
         # Default to depth 4 if no params are given
         depth = 4
-        time_limit = None
+        time_limit_ms = None
         log_command("ENGINE_INFO", f"No params. Using default depth: {depth}")
 
-
-    best_move = searcher.search(board, depth=depth, time_limit=time_limit)
+    # The search function expects the time limit in seconds.
+    time_limit_sec = time_limit_ms / 1000.0 if time_limit_ms is not None else None
+    best_move = searcher.search(board, depth=depth, time_limit=time_limit_sec)
 
     if best_move:
         send_command(f"bestmove {best_move.uci()}")
