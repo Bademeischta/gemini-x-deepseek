@@ -2,6 +2,7 @@ import chess.pgn
 import requests
 import zstandard
 import json
+import io
 import os
 from tqdm import tqdm
 
@@ -10,7 +11,7 @@ DATA_URL = "https://database.lichess.org/standard/lichess_db_standard_rated_2024
 OUTPUT_DIR = "data"
 OUTPUT_FILENAME = "kkk_subset_strategic.jsonl"
 ZST_FILENAME = "lichess_db_standard_rated_2024-10.pgn.zst"
-PGN_FILENAME = "lichess_db_standard_rated_2024-10.pgn"
+# PGN_FILENAME removed as it's no longer used
 
 TARGET_POSITIONS = 500000
 MIN_ELO = 2400
@@ -23,7 +24,8 @@ def download_file(url, local_filename):
         print(f"File {local_filename} already exists. Skipping download.")
         return
     print(f"Downloading {url} to {local_filename}...")
-    with requests.get(url, stream=True) as r:
+    # Per memory, add a User-Agent header
+    with requests.get(url, stream=True, headers={'User-Agent': 'RCN-Data-Pipeline/1.0'}) as r:
         r.raise_for_status()
         total_size = int(r.headers.get('content-length', 0))
         with open(local_filename, 'wb') as f, tqdm(
@@ -33,27 +35,9 @@ def download_file(url, local_filename):
                 f.write(chunk)
                 pbar.update(len(chunk))
 
-def decompress_zst(zst_filename, pgn_filename):
-    """Decompresses a .zst file."""
-    if os.path.exists(pgn_filename):
-        print(f"File {pgn_filename} already exists. Skipping decompression.")
-        return
-    print(f"Decompressing {zst_filename} to {pgn_filename}...")
-    with open(zst_filename, 'rb') as ifh, open(pgn_filename, 'wb') as ofh:
-        dctx = zstandard.ZstdDecompressor()
-        with dctx.stream_writer(ofh) as writer, tqdm(
-            total=os.path.getsize(zst_filename), unit='iB', unit_scale=True, desc="Decompressing"
-        ) as pbar:
-            while True:
-                chunk = ifh.read(16384)
-                if not chunk:
-                    break
-                writer.write(chunk)
-                pbar.update(len(chunk))
-
 def process_games():
     """
-    Processes the PGN file to extract strategic positions from high-ELO games.
+    Processes the PGN stream to extract strategic positions from high-ELO games.
     """
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
@@ -61,65 +45,79 @@ def process_games():
 
     output_path = os.path.join(OUTPUT_DIR, OUTPUT_FILENAME)
     zst_path = os.path.join(OUTPUT_DIR, ZST_FILENAME)
-    pgn_path = os.path.join(OUTPUT_DIR, PGN_FILENAME)
+    error_log_file = os.path.join(OUTPUT_DIR, "process_elite_games_error.log")
 
-    # Step 1: Download and Decompress
+    # Step 1: Download the file
     download_file(DATA_URL, zst_path)
-    decompress_zst(zst_path, pgn_path)
 
-    # Step 2: Process the PGN file
-    positions_count = 0
-    print(f"Processing games from {pgn_path}...")
-    with open(pgn_path) as pgn_file, open(output_path, 'w') as out_file:
-        with tqdm(total=TARGET_POSITIONS, desc="Extracting Positions") as pbar:
-            while positions_count < TARGET_POSITIONS:
-                game = chess.pgn.read_game(pgn_file)
-                if game is None:
-                    break  # End of file
+    # Step 2: Process the PGN stream
+    positions_found = 0
+    games_processed = 0
+    print(f"Processing stream from {zst_path}...")
 
-                # Filter by ELO
-                try:
-                    white_elo = int(game.headers.get("WhiteElo", 0))
-                    black_elo = int(game.headers.get("BlackElo", 0))
-                except ValueError:
-                    continue # Skip if ELO is not a valid integer
+    # The core change: stream processing
+    try:
+        with open(zst_path, 'rb') as f_in, \
+             open(output_path, 'w') as f_out, \
+             open(error_log_file, 'w') as f_err:
 
-                if white_elo < MIN_ELO or black_elo < MIN_ELO:
-                    continue
+            dctx = zstandard.ZstdDecompressor()
+            stream_reader = dctx.stream_reader(f_in)
+            pgn = io.TextIOWrapper(stream_reader, encoding='utf-8')
 
-                # Iterate through moves and extract positions
-                board = game.board()
-                for i, move in enumerate(game.mainline_moves()):
-                    move_num = (i // 2) + 1
-                    board.push(move)
-
-                    if MIN_MOVE_NUM <= move_num <= MAX_MOVE_NUM:
-                        # Create the data point
-                        data_point = {
-                            "fen": board.fen(),
-                            "strategic_flag": 1.0,
-                            "tactic_flag": 0.0
-                        }
-                        out_file.write(json.dumps(data_point) + '\n')
-                        positions_count += 1
-                        pbar.update(1)
-
-                        if positions_count >= TARGET_POSITIONS:
+            with tqdm(total=TARGET_POSITIONS, desc="Extracting Positions") as pbar:
+                while positions_found < TARGET_POSITIONS:
+                    games_processed += 1
+                    try:
+                        game = chess.pgn.read_game(pgn)
+                        if game is None:
+                            print("\nEnde der PGN-Datei erreicht.")
                             break
 
-    # Clean up large files
-    try:
-        os.remove(pgn_path)
-        os.remove(zst_path)
-        print("Cleaned up temporary PGN and ZST files.")
-    except OSError as e:
-        print(f"Error cleaning up files: {e}")
+                        # Keep the original filtering logic
+                        white_elo = int(game.headers.get("WhiteElo", 0))
+                        black_elo = int(game.headers.get("BlackElo", 0))
 
+                        if white_elo < MIN_ELO or black_elo < MIN_ELO:
+                            continue
 
-    print(f"\nProcessing complete. Saved {positions_count} positions to {output_path}.")
+                        board = game.board()
+                        for i, move in enumerate(game.mainline_moves()):
+                            move_num = (i // 2) + 1
+                            board.push(move)
+
+                            if MIN_MOVE_NUM <= move_num <= MAX_MOVE_NUM:
+                                data_point = {
+                                    "fen": board.fen(),
+                                    "strategic_flag": 1.0,
+                                    "tactic_flag": 0.0
+                                }
+                                f_out.write(json.dumps(data_point) + '\n')
+                                positions_found += 1
+                                pbar.update(1)
+
+                            if positions_found >= TARGET_POSITIONS:
+                                break
+
+                        if positions_found >= TARGET_POSITIONS:
+                            break
+
+                    except Exception as e:
+                        f_err.write(f"Fehler bei der Verarbeitung von Spiel #{games_processed}: {e}\n")
+                        continue
+    finally:
+        # Clean up the large downloaded file
+        try:
+            if os.path.exists(zst_path):
+                os.remove(zst_path)
+                print(f"\nCleaned up temporary ZST file: {zst_path}")
+        except OSError as e:
+            print(f"\nError cleaning up file {zst_path}: {e}")
+
+    print(f"\nProcessing complete. Saved {positions_found} positions to {output_path}.")
+    if os.path.exists(error_log_file) and os.path.getsize(error_log_file) > 0:
+        print(f"Some non-fatal errors occurred. Check log: {error_log_file}")
 
 
 if __name__ == "__main__":
-    # This self-contained block allows for direct execution and verification.
-    # It demonstrates the script's functionality before integration.
     process_games()
