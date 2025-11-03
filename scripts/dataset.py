@@ -1,33 +1,64 @@
 import torch
 import json
 import os
-from torch_geometric.data import Dataset
+from torch_geometric.data import Dataset as PyGDataset
+from torch.utils.data import Dataset as TorchDataset
 from scripts.graph_utils import fen_to_graph_data
 from scripts.move_utils import uci_to_index
 
-class ChessGraphDataset(Dataset):
+class ChessGraphDataset(PyGDataset):
     """
     A memory-efficient PyTorch Geometric Dataset for chess positions.
     It reads .jsonl files line by line by indexing the file offsets,
     avoiding loading the entire dataset into memory.
+
+    This class is implemented as a context manager to ensure proper file handle cleanup.
     """
     def __init__(self, jsonl_paths: list, transform=None, pre_transform=None):
         super().__init__(None, transform, pre_transform)
-        self.file_handles = [open(path, 'r') for path in jsonl_paths if os.path.exists(path)]
-        self.line_offsets = self._index_files()
+        self.file_paths = [p for p in jsonl_paths if os.path.exists(p)]
+        self.file_handles = []
+        self.line_offsets = []
+        self._opened = False
+
+    def __enter__(self):
+        if not self._opened:
+            self.file_handles = [open(p, 'r') for p in self.file_paths]
+            self.line_offsets = self._index_files()
+            self._opened = True
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False # Do not suppress exceptions
+
+    def close(self):
+        if self._opened:
+            for f in self.file_handles:
+                if not f.closed:
+                    f.close()
+            self.file_handles = []
+            self._opened = False
 
     def _index_files(self):
         """Creates an index of (file_handle_index, offset) for each line."""
+        if not self.file_handles:
+            return []
         offsets = []
         for i, f in enumerate(self.file_handles):
             f.seek(0)
-            offset = f.tell()
-            for line in f:
-                offsets.append((i, offset))
+            # Use a while loop with tell() before readline() for accurate offsets
+            while True:
                 offset = f.tell()
+                line = f.readline()
+                if not line:
+                    break
+                offsets.append((i, offset))
         return offsets
 
     def len(self):
+        if not self._opened:
+            raise RuntimeError("Dataset must be opened using a 'with' statement before calling len().")
         return len(self.line_offsets)
 
     def get(self, idx):
@@ -35,6 +66,9 @@ class ChessGraphDataset(Dataset):
         Gets a single data sample by seeking to its offset, converting its FEN
         to a graph, and attaching pre-processed labels.
         """
+        if not self._opened:
+            raise RuntimeError("Dataset must be opened using a 'with' statement before accessing items.")
+
         file_idx, offset = self.line_offsets[idx]
         f = self.file_handles[file_idx]
         f.seek(offset)
@@ -54,8 +88,29 @@ class ChessGraphDataset(Dataset):
 
     def __del__(self):
         """Ensures file handles are closed when the object is destroyed."""
-        for f in self.file_handles:
-            f.close()
+        self.close()
+
+# Wrapper for compatibility with torch.utils.data.random_split
+class DatasetWrapper(TorchDataset):
+    def __init__(self, base_dataset, indices):
+        self.base_dataset = base_dataset
+        self.indices = indices
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        # Retrieve the actual index from our subset of indices
+        original_idx = self.indices[idx]
+        return self.base_dataset[original_idx]
+
+    # The wrapper itself doesn't need to manage resources,
+    # as the base_dataset is managed externally (e.g., in a 'with' block).
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
 
 if __name__ == '__main__':
     print("--- Testing Memory-Efficient ChessGraphDataset ---")
@@ -68,28 +123,28 @@ if __name__ == '__main__':
     test_path = "test_data.jsonl"
     with open(test_path, 'w') as f:
         for item in dummy_data:
-            f.write(json.dumps(item) + '\n') # Correct newline character
+            f.write(json.dumps(item) + '\n')
 
-    # Test dataset
-    dataset = ChessGraphDataset(jsonl_paths=[test_path, "non_existent_file.jsonl"])
-    print(f"Dataset created successfully. Length: {len(dataset)}")
-    assert len(dataset) == 2
+    # Test dataset using the context manager
+    with ChessGraphDataset(jsonl_paths=[test_path, "non_existent_file.jsonl"]) as dataset:
+        print(f"Dataset opened successfully via context manager. Length: {len(dataset)}")
+        assert len(dataset) == 2
 
-    # Test `get` method for the second sample
-    sample = dataset.get(1)
-    print(f"\nTesting sample 1: {sample}")
+        # Test `get` method for the second sample
+        sample = dataset.get(1)
+        print(f"\nTesting sample 1: {sample}")
 
-    assert sample.y.item() == -0.5
-    assert sample.policy_target.item() == uci_to_index("a7a5")
-    assert sample.strategic_flag.item() == 1.0
-    # Check for tactic_flag which is missing in the record, should default to 0.0
-    assert 'tactic_flag' in sample
-    assert sample.tactic_flag.item() == 0.0
-    print("\nLabel attachment and default values are correct.")
+        assert sample.y.item() == -0.5
+        assert sample.policy_target.item() == uci_to_index("a7a5")
+        assert sample.strategic_flag.item() == 1.0
+        # Check for tactic_flag which is missing in the record, should default to 0.0
+        assert 'tactic_flag' in sample
+        assert sample.tactic_flag.item() == 0.0
+        print("\nLabel attachment and default values are correct.")
 
-    print("\nAll tests passed!")
+    print("\nDataset closed automatically on exiting 'with' block.")
+    print("All tests passed!")
 
     # Cleanup
-    del dataset # Explicitly delete to trigger __del__ for file closing
     os.remove(test_path)
     print("\nCleaned up dummy files.")

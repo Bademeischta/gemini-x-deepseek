@@ -40,11 +40,14 @@ class TestMoveUtils(unittest.TestCase):
                 reconstructed_move = index_to_uci(index)
                 self.assertEqual(move, reconstructed_move, "Roundtrip conversion should yield the original move")
 
-    def test_invalid_uci_raises_error(self):
-        """Tests if an invalid UCI string raises a KeyError or ValueError."""
-        invalid_uci = "e2e9" # Invalid square
-        with self.assertRaises((KeyError, ValueError)):
-            uci_to_index(invalid_uci)
+    def test_invalid_uci_returns_zero(self):
+        """
+        Tests if an invalid UCI string returns the default index 0,
+        instead of raising an error.
+        """
+        invalid_uci = "e2e9" # Invalid square, guaranteed not in the move map
+        index = uci_to_index(invalid_uci)
+        self.assertEqual(index, 0, "Invalid UCI moves should return index 0")
 
     def test_index_out_of_bounds_raises_error(self):
         """Tests if an out-of-bounds index raises an IndexError."""
