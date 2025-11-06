@@ -59,7 +59,10 @@ class Searcher:
             value, policy, _, _ = self.model(graph_data)
         return value.item(), (policy[0].flatten(), policy[1].flatten(), policy[2].flatten())
 
-    def _quiescence_search(self, board, alpha, beta):
+    def _quiescence_search(self, board, alpha, beta, depth=0):
+        if depth >= config.QUIESCENCE_SEARCH_DEPTH:
+            return self._get_model_output(board)[0]
+
         self.nodes_searched += 1
         stand_pat = self._get_model_output(board)[0]
 
@@ -80,7 +83,7 @@ class Searcher:
 
         for move in capture_moves:
             board.push(move)
-            score = -self._quiescence_search(board, -beta, -alpha)
+            score = -self._quiescence_search(board, -beta, -alpha, depth + 1)
             board.pop()
             if score >= beta:
                 return beta
