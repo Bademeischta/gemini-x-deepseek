@@ -19,6 +19,7 @@ This is the first stable release after a comprehensive overhaul of the RCN chess
 - **End-to-End Training Test:** Added a test to validate the entire training pipeline.
 - **Dummy Model Creation Script:** Added a script (`scripts/create_dummy_model.py`) to generate a model with random weights for development.
 - **Code Quality:** Added extensive type hints and Google-style docstrings to all major modules.
+- **Move Generation Caching:** Implemented caching for sorted move lists to improve search performance.
 
 ### Fixed
 - **Critical `uci_to_index` Crash:** The function no longer crashes on invalid moves.
