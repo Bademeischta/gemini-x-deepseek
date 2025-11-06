@@ -1,42 +1,69 @@
+"""
+Utilities for converting chess positions in FEN format to graph data structures
+for use with PyTorch Geometric.
+"""
 import torch
 import chess
 from torch_geometric.data import Data
+from typing import Dict, Tuple
 
-PIECE_TO_INT = {
+PIECE_TO_INT: Dict[Tuple[chess.PieceType, chess.Color], int] = {
     (p_type, color): i for i, (p_type, color) in enumerate(
         (p, c) for c in (chess.WHITE, chess.BLACK) for p in
         (chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN, chess.KING)
     )
 }
-EDGE_TYPE_TO_INT = {"ATTACKS": 0, "DEFENDS": 1, "PIN": 2, "XRAY": 3}
-NUM_EDGE_FEATURES = len(EDGE_TYPE_TO_INT)
-TOTAL_NODE_FEATURES = 11 # piece, file, rank, turn, castling(4), ep, 50-move, is_real
+"""Mapping from (piece_type, color) tuples to integer indices."""
+
+EDGE_TYPE_TO_INT: Dict[str, int] = {"ATTACKS": 0, "DEFENDS": 1, "PIN": 2, "XRAY": 3}
+"""Mapping from edge type names to integer indices."""
+
+NUM_EDGE_FEATURES: int = len(EDGE_TYPE_TO_INT)
+"""The total number of possible edge types."""
+
+TOTAL_NODE_FEATURES: int = 11
+"""The total number of features in a node tensor: piece, file, rank, turn, 4x castling, ep, 50-move, is_real."""
 
 def fen_to_graph_data(fen: str) -> Data:
-    board = chess.Board(fen)
-    turn = 1.0 if board.turn == chess.WHITE else -1.0
+    """Converts a FEN string into a PyTorch Geometric Data object.
 
-    castling_rights = [
+    This function creates a graph representation of a chess position where each
+    piece is a node. Node features include piece identity, position, and global
+    game state (turn, castling rights, etc.). Edges represent relationships
+    like attacks, defends, pins, and x-rays.
+
+    Args:
+        fen: The chess position in Forsyth-Edwards Notation (FEN).
+
+    Returns:
+        A PyG Data object representing the position as a graph.
+    """
+    board = chess.Board(fen)
+    turn: float = 1.0 if board.turn == chess.WHITE else -1.0
+
+    castling_rights: list[float] = [
         1.0 if board.has_kingside_castling_rights(chess.WHITE) else 0.0,
         1.0 if board.has_queenside_castling_rights(chess.WHITE) else 0.0,
         1.0 if board.has_kingside_castling_rights(chess.BLACK) else 0.0,
         1.0 if board.has_queenside_castling_rights(chess.BLACK) else 0.0,
     ]
-    half_move_clock = board.halfmove_clock / 100.0
-    ep_square = (board.ep_square / 63.0) if board.ep_square else 0.0
+    half_move_clock: float = board.halfmove_clock / 100.0
+    ep_square: float = (board.ep_square / 63.0) if board.ep_square else 0.0
 
-    nodes, sq_to_idx = [], {}
+    nodes: list[list[float]] = []
+    sq_to_idx: Dict[chess.Square, int] = {}
     for i, (sq, piece) in enumerate(sorted(board.piece_map().items())):
-        real_node_features = [
-            PIECE_TO_INT[(piece.piece_type, piece.color)],
-            chess.square_file(sq),
-            chess.square_rank(sq),
+        real_node_features: list[float] = [
+            float(PIECE_TO_INT[(piece.piece_type, piece.color)]),
+            float(chess.square_file(sq)),
+            float(chess.square_rank(sq)),
             turn
         ] + castling_rights + [ep_square, half_move_clock, 1.0]
         nodes.append(real_node_features)
         sq_to_idx[sq] = i
 
-    edges, edge_attrs = [], []
+    edges: list[list[int]] = []
+    edge_attrs: list[int] = []
     for source_sq, source_idx in sq_to_idx.items():
         # Attacks/Defends
         for target_sq in board.attacks(source_sq):
@@ -55,15 +82,15 @@ def fen_to_graph_data(fen: str) -> Data:
         if piece and piece.piece_type in [chess.ROOK, chess.BISHOP, chess.QUEEN]:
             for blocker_sq in board.attacks(source_sq):
                 if board.piece_at(blocker_sq) and board.color_at(blocker_sq) != piece.color:
-                    file_dir = chess.square_file(blocker_sq) - chess.square_file(source_sq)
-                    rank_dir = chess.square_rank(blocker_sq) - chess.square_rank(source_sq)
-                    step_file = 0 if file_dir == 0 else (1 if file_dir > 0 else -1)
-                    step_rank = 0 if rank_dir == 0 else (1 if rank_dir > 0 else -1)
+                    file_dir: int = chess.square_file(blocker_sq) - chess.square_file(source_sq)
+                    rank_dir: int = chess.square_rank(blocker_sq) - chess.square_rank(source_sq)
+                    step_file: int = 0 if file_dir == 0 else (1 if file_dir > 0 else -1)
+                    step_rank: int = 0 if rank_dir == 0 else (1 if rank_dir > 0 else -1)
 
-                    current_sq = blocker_sq
+                    current_sq: chess.Square = blocker_sq
                     while True:
-                        next_file = chess.square_file(current_sq) + step_file
-                        next_rank = chess.square_rank(current_sq) + step_rank
+                        next_file: int = chess.square_file(current_sq) + step_file
+                        next_rank: int = chess.square_rank(current_sq) + step_rank
                         if not (0 <= next_file <= 7 and 0 <= next_rank <= 7): break
 
                         current_sq = chess.square(next_file, next_rank)
@@ -83,6 +110,7 @@ def fen_to_graph_data(fen: str) -> Data:
     )
 
 if __name__ == '__main__':
+    # This block is for self-contained validation of the script's logic.
     fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
     g = fen_to_graph_data(fen)
 
@@ -107,8 +135,8 @@ if __name__ == '__main__':
     queen_idx = sq_map_xray[chess.E3]
     king_idx = sq_map_xray[chess.E5]
 
-    found = any(s == queen_idx and t == king_idx and a == EDGE_TYPE_TO_INT["XRAY"]
-                for s, t, a in zip(g_xray.edge_index[0].tolist(), g_xray.edge_index[1].tolist(), g_xray.edge_attr.tolist()))
+    found = any(s == queen_idx and t == king_idx and torch.argmax(g_xray.edge_attr[i]).item() == EDGE_TYPE_TO_INT["XRAY"]
+                for i, (s, t) in enumerate(g_xray.edge_index.t().tolist()))
 
     assert found, "X-Ray edge from e3 to e5 not found"
 

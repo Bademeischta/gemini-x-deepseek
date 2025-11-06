@@ -1,23 +1,40 @@
+"""
+This module contains the main training loop for the RCNModel.
+
+It handles data loading, model setup, training, validation, and saving the
+best model checkpoint.
+"""
 import torch
 import torch.nn as nn
-from torch.utils.data import random_split
+from torch.utils.data import random_split, Subset
 from torch_geometric.loader import DataLoader
 import os
 import json
+from typing import List
 
 from scripts.model import RCNModel
 from scripts.dataset import ChessGraphDataset, DatasetWrapper
 from scripts.graph_utils import TOTAL_NODE_FEATURES, NUM_EDGE_FEATURES
 import config
 
-def train():
+def train() -> None:
+    """
+    Main training function.
+
+    This function orchestrates the entire training process:
+    1. Sets up the device (GPU or CPU).
+    2. Initializes and prepares the datasets and data loaders.
+    3. Initializes the model, optimizer, and loss functions.
+    4. Runs the training and validation loop for a configured number of epochs.
+    5. Saves the model with the best validation loss.
+    """
     os.makedirs(os.path.dirname(config.MODEL_SAVE_PATH), exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     # --- 1. Data Setup ---
     print("Setting up data loaders...")
-    jsonl_paths = [p for p in [config.DATA_PUZZLES_PATH, config.DATA_STRATEGIC_PATH] if p]
+    jsonl_paths: List[str] = [p for p in [config.DATA_PUZZLES_PATH, config.DATA_STRATEGIC_PATH] if p]
     if not all(os.path.exists(p) for p in jsonl_paths):
         os.makedirs("data", exist_ok=True)
         dummy_data = [
@@ -30,20 +47,18 @@ def train():
             with open(config.DATA_STRATEGIC_PATH, 'w') as f: f.write(json.dumps(dummy_data[1]) + '\n')
 
     with ChessGraphDataset(jsonl_paths=jsonl_paths) as dataset:
-        # Use a smaller subset for quick testing if the dataset is large
         dataset_len = len(dataset)
         train_size = int(config.TRAIN_TEST_SPLIT * dataset_len)
         val_size = dataset_len - train_size
 
-        # Ensure we have at least one sample in validation
         if val_size == 0 and train_size > 0:
             train_size -= 1
             val_size += 1
 
         if train_size == 0 or val_size == 0:
             print("Not enough data to create train/val split. Using all data for training.")
-            train_indices = list(range(dataset_len))
-            val_indices = []
+            train_indices: List[int] = list(range(dataset_len))
+            val_indices: List[int] = []
         else:
             train_subset, val_subset = random_split(dataset, [train_size, val_size])
             train_indices = train_subset.indices
@@ -66,13 +81,13 @@ def train():
         loss_policy_fn = nn.CrossEntropyLoss(ignore_index=-1)
         loss_tactic_fn = nn.BCELoss()
         loss_strategic_fn = nn.BCELoss()
-        best_val_loss = float('inf')
+        best_val_loss: float = float('inf')
 
         # --- 3. Training Loop ---
         print("\nStarting training...")
         for epoch in range(config.NUM_EPOCHS):
             model.train()
-            total_train_loss = 0
+            total_train_loss: float = 0.0
             for batch in train_loader:
                 batch = batch.to(device)
                 optimizer.zero_grad()
@@ -97,9 +112,8 @@ def train():
 
             avg_train_loss = total_train_loss / max(1, len(train_loader))
 
-            # Validation
-            total_val_loss = 0
-            if val_loader:
+            total_val_loss: float = 0.0
+            if val_loader and len(val_loader) > 0:
                 model.eval()
                 with torch.no_grad():
                     for batch in val_loader:
@@ -108,10 +122,9 @@ def train():
                         policy_from, policy_to, policy_promo = policy_logits
 
                         loss_v = loss_value_fn(value, batch.y.view(-1, 1))
-                        loss_p_from = loss_policy_fn(policy_from, batch.policy_target_from)
-                        loss_p_to = loss_policy_fn(policy_to, batch.policy_target_to)
-                        loss_p_promo = loss_policy_fn(policy_promo, batch.policy_target_promo)
-                        loss_p = loss_p_from + loss_p_to + loss_p_promo
+                        loss_p = loss_policy_fn(policy_from, batch.policy_target_from) + \
+                                 loss_policy_fn(policy_to, batch.policy_target_to) + \
+                                 loss_policy_fn(policy_promo, batch.policy_target_promo)
 
                         loss_t = loss_tactic_fn(tactic, batch.tactic_flag.view(-1, 1))
                         loss_s = loss_strategic_fn(strategic, batch.strategic_flag.view(-1, 1))
