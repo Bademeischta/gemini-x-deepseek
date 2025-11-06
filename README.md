@@ -52,6 +52,80 @@ Nach einer kritischen Analyse wurden fundamentale Fehler in der Implementierung 
 
 ---
 
-## Projektstruktur & Nutzung
+## Nutzung
 
-(Die restlichen Abschnitte zur Installation und Nutzung bleiben wie zuvor.)
+Dieses Projekt kann sowohl lokal auf Ihrem Rechner als auch in Google Colab ausgeführt werden.
+
+### Lokale Nutzung
+
+**1. Voraussetzungen:**
+- Python 3.8 oder höher
+- Git
+
+**2. Installation:**
+Klonen Sie das Repository und installieren Sie die Abhängigkeiten:
+```bash
+git clone https://github.com/Bademeischta/gemini-x-deepseek
+cd gemini-x-deepseek
+pip install -r requirements.txt
+```
+
+**3. Daten und Modelle vorbereiten:**
+- Platzieren Sie Ihre Trainingsdaten (im `.jsonl`-Format) im `data/`-Verzeichnis.
+- Trainierte Modelle werden standardmäßig im `models/`-Verzeichnis gespeichert und von dort geladen.
+
+**4. Training starten:**
+```bash
+python train.py
+```
+
+**5. Engine verwenden:**
+Die Engine kommuniziert über das UCI-Protokoll. Sie können sie in jeder UCI-kompatiblen Schach-GUI verwenden, indem Sie den folgenden Befehl als Engine-Pfad angeben:
+```bash
+python engine.py
+```
+
+### Google Colab Nutzung
+
+**1. Notebook einrichten:**
+Öffnen Sie ein neues Colab-Notebook und stellen Sie sicher, dass Sie eine GPU-Laufzeit verwenden (`Laufzeit` -> `Laufzeittyp ändern` -> `T4 GPU`).
+
+**2. Projekt klonen und installieren:**
+Führen Sie die folgenden Befehle in einer Code-Zelle aus, um das Projekt zu klonen und die Abhängigkeiten zu installieren:
+```python
+!git clone https://github.com/Bademeischta/gemini-x-deepseek
+%cd gemini-x-deepseek
+!pip install -r requirements.txt
+```
+
+**3. Daten-Upload:**
+Laden Sie Ihre `.jsonl`-Datensätze in den `data/`-Ordner im Colab-Dateisystem hoch. Sie können dies manuell über die Seitenleiste tun oder `gdown` bzw. `wget` verwenden, wenn Ihre Daten online verfügbar sind.
+
+**4. Training in Colab:**
+Starten Sie das Training, indem Sie das Skript aus einer Zelle heraus aufrufen:
+```python
+!python train.py
+```
+Das trainierte Modell (`rcn_model.pth`) finden Sie danach im `models/`-Verzeichnis.
+
+**5. Engine in Colab (für Analyse):**
+Obwohl eine direkte GUI-Anbindung in Colab nicht möglich ist, können Sie die Engine programmatisch für Analysen verwenden. Hier ist ein Beispiel, wie Sie die Engine mit `python-chess` steuern können:
+
+```python
+import chess
+import chess.engine
+
+# Pfad zur Engine in Colab
+engine_path = "/content/gemini-x-deepseek/engine.py"
+
+# Engine starten
+engine = chess.engine.SimpleEngine.popen_uci(["python", engine_path])
+
+board = chess.Board()
+info = engine.analyse(board, chess.engine.Limit(time=1.0))
+
+print("Bewertung:", info["score"])
+
+# Engine beenden
+engine.quit()
+```
