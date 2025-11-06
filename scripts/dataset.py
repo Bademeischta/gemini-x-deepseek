@@ -84,6 +84,7 @@ class ChessGraphDataset(PyGDataset):
         graph_data.y = torch.tensor([data_record.get('value', 0.0)], dtype=torch.float32)
         graph_data.policy_target_from = torch.tensor(policy_targets['from'], dtype=torch.long)
         graph_data.policy_target_to = torch.tensor(policy_targets['to'], dtype=torch.long)
+        graph_data.policy_target_promo = torch.tensor(policy_targets.get('promo', -1), dtype=torch.long)
         graph_data.tactic_flag = torch.tensor([data_record.get('tactic_flag', 0.0)], dtype=torch.float32)
         graph_data.strategic_flag = torch.tensor([data_record.get('strategic_flag', 0.0)], dtype=torch.float32)
 
@@ -92,9 +93,17 @@ class ChessGraphDataset(PyGDataset):
     def _enter_and_index(self):
         """Internal helper to allow len() to work before 'with'."""
         if not self._opened:
-            self.file_handles = [open(p, 'r') for p in self.file_paths]
+            # This logic is for a temporary open/close to get the length
+            temp_handles = [open(p, 'r') for p in self.file_paths]
+            original_handles = self.file_handles
+            self.file_handles = temp_handles
+
             self.line_offsets = self._index_files()
-            # Don't set _opened to True, so 'with' block can still manage it properly
+
+            for f in temp_handles:
+                f.close()
+
+            self.file_handles = original_handles
 
     def __del__(self):
         """Ensures file handles are closed when the object is destroyed."""
@@ -121,25 +130,37 @@ if __name__ == '__main__':
     print("--- Testing Memory-Efficient ChessGraphDataset ---")
 
     dummy_data = [{"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "value": 0.1, "policy_target": "e2e4"},
-                  {"fen": "r1b2rk1/pp1p1p1p/1qn2np1/4p3/4P3/1N1B1N2/PPPQ1PPP/R3K2R b KQ - 1 11", "value": -0.5, "policy_target": "a7a5"}]
+                  {"fen": "r1b2rk1/pp1p1p1p/1qn2np1/4p3/4P3/1N1B1N2/PPPQ1PPP/R3K2R b KQ - 1 11", "value": -0.5, "policy_target": "a7a5"},
+                  {"fen": "8/k7/8/8/8/8/p7/K7 b - - 1 1", "value": -1.0, "policy_target": "a2a1q"}]
     test_path = "test_data.jsonl"
     with open(test_path, 'w') as f:
         for item in dummy_data: f.write(json.dumps(item) + '\n')
 
     # Test len() before entering context
     dataset_standalone = ChessGraphDataset(jsonl_paths=[test_path])
-    assert len(dataset_standalone) == 2
+    assert len(dataset_standalone) == 3
     dataset_standalone.close() # Manually close after len()
     print("len() works correctly before entering 'with' block.")
 
     with ChessGraphDataset(jsonl_paths=[test_path]) as dataset:
         print(f"Dataset opened. Length: {len(dataset)}")
-        assert len(dataset) == 2
-        sample = dataset.get(1)
-        expected_targets = uci_to_policy_targets("a7a5")
-        assert sample.policy_target_from.item() == expected_targets['from']
-        assert sample.policy_target_to.item() == expected_targets['to']
-        print("Sample retrieval and target generation are correct.")
+        assert len(dataset) == 3
+
+        # Test standard move
+        sample1 = dataset.get(1)
+        expected_targets1 = uci_to_policy_targets("a7a5")
+        assert sample1.policy_target_from.item() == expected_targets1['from']
+        assert sample1.policy_target_to.item() == expected_targets1['to']
+        assert sample1.policy_target_promo.item() == -1
+        print("Standard move targets are correct.")
+
+        # Test promotion move
+        sample2 = dataset.get(2)
+        expected_targets2 = uci_to_policy_targets("a2a1q")
+        assert sample2.policy_target_from.item() == expected_targets2['from']
+        assert sample2.policy_target_to.item() == expected_targets2['to']
+        assert sample2.policy_target_promo.item() == 3 # Queen promotion
+        print("Promotion move targets are correct.")
 
     print("\nAll tests passed!")
     os.remove(test_path)

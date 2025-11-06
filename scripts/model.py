@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import GATv2Conv, global_mean_pool, BatchNorm
 import config
-from scripts.move_utils import POLICY_OUTPUT_SIZE, MAX_FROM_SQUARES, MAX_TO_SQUARES, MAX_PROMOTION_PIECES
+from scripts.move_utils import MAX_FROM_SQUARES, MAX_TO_SQUARES, MAX_PROMOTION_PIECES
 
 class RCNModel(nn.Module):
     def __init__(self, in_channels, out_channels, num_edge_features, heads=config.GAT_HEADS):

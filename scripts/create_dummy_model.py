@@ -1,37 +1,36 @@
-
 import torch
 import os
+import sys
+
+# Add project root to allow absolute imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from scripts.model import RCNModel
+from scripts.graph_utils import TOTAL_NODE_FEATURES, NUM_EDGE_FEATURES
+import config
 
-def create_dummy_model():
+def create_and_save_dummy_model():
     """
-    Creates and saves a dummy RCN model with random weights.
-
-    This is useful for development and testing when a fully trained model is not
-    yet available, allowing other parts of the system (like the engine) to be
-    built and tested independently.
+    Initializes an RCNModel with random weights and saves it to the path
+    specified in the config file.
     """
-    print("Creating a dummy RCN model with random initial weights...")
+    print("Initializing dummy RCNModel...")
 
-    # Ensure the models directory exists
-    model_dir = "models"
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
-        print(f"Created directory: {model_dir}")
+    # Ensure the target directory exists
+    os.makedirs(os.path.dirname(config.MODEL_SAVE_PATH), exist_ok=True)
 
-    # Instantiate the model from the model definition.
-    # The constructor takes no arguments.
-    dummy_model = RCNModel()
+    # Correctly initialize the model with required parameters
+    dummy_model = RCNModel(
+        in_channels=TOTAL_NODE_FEATURES,
+        out_channels=config.MODEL_OUT_CHANNELS,
+        num_edge_features=NUM_EDGE_FEATURES
+    )
 
-    # The model is initialized with random weights by default in PyTorch
+    # Save the initialized model
+    torch.save(dummy_model.state_dict(), config.MODEL_SAVE_PATH)
 
-    model_path = os.path.join(model_dir, "rcn_model.pth")
-    try:
-        torch.save(dummy_model.state_dict(), model_path)
-        print(f"Successfully saved dummy model to: {model_path}")
-    except Exception as e:
-        print(f"Error saving the dummy model: {e}")
+    print(f"Dummy model saved successfully to: {config.MODEL_SAVE_PATH}")
+    print("The engine can now be run using this randomly initialized model.")
 
 if __name__ == '__main__':
-    # This allows the script to be run directly for verification
-    create_dummy_model()
+    create_and_save_dummy_model()
