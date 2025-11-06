@@ -24,14 +24,22 @@ class TestEndToEnd(unittest.TestCase):
     def tearDown(self):
         if os.path.exists(self.test_path):
             os.remove(self.test_path)
-        if os.path.exists("e2e_test_model.pth"):
-            os.remove("e2e_test_model.pth")
+        if os.path.exists("models/e2e_test_model.pth"):
+            os.remove("models/e2e_test_model.pth")
+        if os.path.exists("models/e2e_test_checkpoint.pth"):
+            os.remove("models/e2e_test_checkpoint.pth")
+        # Clean up the 'models' directory if it's empty
+        if os.path.exists("models") and not os.listdir("models"):
+            os.rmdir("models")
+
 
     @patch('config.DATA_PUZZLES_PATH', "e2e_test_data.jsonl")
     @patch('config.DATA_STRATEGIC_PATH', "") # Use one file for simplicity
     @patch('config.MODEL_SAVE_PATH', "models/e2e_test_model.pth")
+    @patch('config.TRAINING_CHECKPOINT_PATH', "models/e2e_test_checkpoint.pth")
     @patch('config.NUM_EPOCHS', 1)
-    @patch('config.BATCH_SIZE', 2)
+    @patch('config.BATCH_SIZE', 1) # Use batch size of 1 to handle small dataset
+    @patch('config.TRAIN_TEST_SPLIT', 1.0) # Use all data for training to avoid val_loss issues with BatchNorm
     def test_short_training_run(self):
         """
         Tests that the training process can run for one epoch without errors.

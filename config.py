@@ -18,11 +18,29 @@ NUM_EPOCHS = 20
 TRAIN_TEST_SPLIT = 0.9
 GRADIENT_CLIP_NORM = 1.0
 
-# --- File Paths ---
-MODEL_SAVE_PATH = "models/rcn_model.pth"
-DATA_PUZZLES_PATH = "data/kkk_subset_puzzles.jsonl"
-DATA_STRATEGIC_PATH = "data/kkk_subset_strategic.jsonl"
-ENGINE_LOG_PATH = "engine.log"
+import os
+
+# --- File Paths (Google Drive Persistence) ---
+# Base path for the project on Google Drive.
+DRIVE_PROJECT_ROOT = "/content/drive/MyDrive/RCN_Project"
+
+# Model and checkpoint paths
+MODEL_DIR = os.path.join(DRIVE_PROJECT_ROOT, "models")
+MODEL_SAVE_PATH = os.path.join(MODEL_DIR, "rcn_model.pth")
+TRAINING_CHECKPOINT_PATH = os.path.join(MODEL_DIR, "training_checkpoint.pth")
+
+# Data paths
+DATA_DIR = os.path.join(DRIVE_PROJECT_ROOT, "data")
+DATA_PUZZLES_PATH = os.path.join(DATA_DIR, "kkk_subset_puzzles.jsonl")
+DATA_STRATEGIC_PATH = os.path.join(DATA_DIR, "kkk_subset_strategic.jsonl")
+PROCESSING_STATE_PATH = os.path.join(DATA_DIR, "processing_state.json")
+
+# Log path
+ENGINE_LOG_PATH = os.path.join(DRIVE_PROJECT_ROOT, "engine.log")
+
+# Directory creation is handled by the scripts that need them (train.py, process_elite_games.py)
+# to make the code more modular and testable.
+
 
 # --- Logging Configuration ---
 LOG_MAX_BYTES = 10 * 1024 * 1024 # 10 MB
