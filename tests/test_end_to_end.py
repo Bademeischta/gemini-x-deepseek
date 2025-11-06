@@ -38,7 +38,7 @@ class TestEndToEnd(unittest.TestCase):
     @patch('config.MODEL_SAVE_PATH', "models/e2e_test_model.pth")
     @patch('config.TRAINING_CHECKPOINT_PATH', "models/e2e_test_checkpoint.pth")
     @patch('config.NUM_EPOCHS', 1)
-    @patch('config.BATCH_SIZE', 1) # Use batch size of 1 to handle small dataset
+    @patch('config.BATCH_SIZE', 2) # Use full dataset size to avoid BatchNorm issues
     @patch('config.TRAIN_TEST_SPLIT', 1.0) # Use all data for training to avoid val_loss issues with BatchNorm
     def test_short_training_run(self):
         """
