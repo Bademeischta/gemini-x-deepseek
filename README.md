@@ -41,7 +41,7 @@ Nach einer kritischen Analyse wurden fundamentale Fehler in der Implementierung 
 
 ### 🔴 Noch fehlend
 
--   [ ] **Fix 17: Move Generation Caching:** Caching für die Zug-Sortierung ist nicht implementiert.
+- [x] **Fix 17: Move Generation Caching:** Caching für die Zug-Sortierung ist implementiert.
 -   [ ] **Fix 19 (Engine): Tree Reuse:** Die Wiederverwendung von Teilen des Suchbaums zwischen den Zügen fehlt.
 -   [ ] **Fix 18 (Performance): Graph-Erstellung optimieren:** Die `fen_to_graph_data`-Funktion ist noch nicht auf Performance optimiert.
 -   [ ] **Fix 21: Einheitliches Error-Handling:** Das Error-Handling im Projekt ist noch inkonsistent.
