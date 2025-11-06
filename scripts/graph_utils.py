@@ -1,191 +1,112 @@
 import torch
 import chess
 from torch_geometric.data import Data
-import numpy as np
 
-# --- Mappings ---
-
-# Map piece type and color to a single integer. Add a virtual piece for the turn node.
 PIECE_TO_INT = {
-    (chess.PAWN, chess.WHITE): 0,
-    (chess.KNIGHT, chess.WHITE): 1,
-    (chess.BISHOP, chess.WHITE): 2,
-    (chess.ROOK, chess.WHITE): 3,
-    (chess.QUEEN, chess.WHITE): 4,
-    (chess.KING, chess.WHITE): 5,
-    (chess.PAWN, chess.BLACK): 6,
-    (chess.KNIGHT, chess.BLACK): 7,
-    (chess.BISHOP, chess.BLACK): 8,
-    (chess.ROOK, chess.BLACK): 9,
-    (chess.QUEEN, chess.BLACK): 10,
-    (chess.KING, chess.BLACK): 11,
-    "TURN_NODE": 12, # Virtual piece type for the turn indicator node
+    (p_type, color): i for i, (p_type, color) in enumerate(
+        (p, c) for c in (chess.WHITE, chess.BLACK) for p in
+        (chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN, chess.KING)
+    )
 }
-
-# Map edge types to an integer
-EDGE_TYPE_TO_INT = {
-    "ATTACKS": 0,
-    "DEFENDS": 1,
-    "TURN_CONNECTION": 2, # Edge type for the virtual turn node
-}
-
-NUM_PIECE_TYPES = len(PIECE_TO_INT) # Should be 13 (0-12)
-NUM_FEATURES_PER_NODE = 4 # piece_type, file, rank, turn_feature
+EDGE_TYPE_TO_INT = {"ATTACKS": 0, "DEFENDS": 1, "PIN": 2, "XRAY": 3}
+NUM_EDGE_FEATURES = len(EDGE_TYPE_TO_INT)
+TOTAL_NODE_FEATURES = 11 # piece, file, rank, turn, castling(4), ep, 50-move, is_real
 
 def fen_to_graph_data(fen: str) -> Data:
-    """
-    Converts a FEN string into a torch_geometric.data.Data object with rich features.
-
-    Nodes: Each piece on the board + a virtual 'turn' node.
-    Node Features: [piece_type, file, rank, turn_feature]
-    Global Graph Attributes:
-        - turn: Single float indicating whose turn it is.
-        - castling_rights: 4-bit tensor for castling availability.
-        - en_passant: One-hot encoded tensor (64+1) for the en passant square.
-        - halfmove_clock: Normalized halfmove clock.
-        - fullmove_number: Fullmove number.
-    Edges: Represent attack, defense, and turn relationships.
-    """
     board = chess.Board(fen)
-    turn_feature = 1.0 if board.turn == chess.WHITE else -1.0
+    turn = 1.0 if board.turn == chess.WHITE else -1.0
 
-    node_features = []
-    square_to_node_idx = {}
+    castling_rights = [
+        1.0 if board.has_kingside_castling_rights(chess.WHITE) else 0.0,
+        1.0 if board.has_queenside_castling_rights(chess.WHITE) else 0.0,
+        1.0 if board.has_kingside_castling_rights(chess.BLACK) else 0.0,
+        1.0 if board.has_queenside_castling_rights(chess.BLACK) else 0.0,
+    ]
+    half_move_clock = board.halfmove_clock / 100.0
+    ep_square = (board.ep_square / 63.0) if board.ep_square else 0.0
 
-    # --- 1. Piece Node Creation ---
-    for square in chess.SQUARES:
-        piece = board.piece_at(square)
-        if piece:
-            piece_type_int = PIECE_TO_INT[(piece.piece_type, piece.color)]
-            file = chess.square_file(square)
-            rank = chess.square_rank(square)
+    nodes, sq_to_idx = [], {}
+    for i, (sq, piece) in enumerate(sorted(board.piece_map().items())):
+        real_node_features = [
+            PIECE_TO_INT[(piece.piece_type, piece.color)],
+            chess.square_file(sq),
+            chess.square_rank(sq),
+            turn
+        ] + castling_rights + [ep_square, half_move_clock, 1.0]
+        nodes.append(real_node_features)
+        sq_to_idx[sq] = i
 
-            # ANSATZ 2: Node-level turn feature
-            node_features.append([piece_type_int, file, rank, turn_feature])
-            square_to_node_idx[square] = len(node_features) - 1
+    edges, edge_attrs = [], []
+    for source_sq, source_idx in sq_to_idx.items():
+        # Attacks/Defends
+        for target_sq in board.attacks(source_sq):
+            if target_sq in sq_to_idx:
+                edges.append([source_idx, sq_to_idx[target_sq]])
+                edge_attrs.append(EDGE_TYPE_TO_INT["ATTACKS" if board.color_at(target_sq) != board.color_at(source_sq) else "DEFENDS"])
+        # Pins
+        if board.is_pinned(board.color_at(source_sq), source_sq):
+            for pinner_sq in board.pin(board.color_at(source_sq), source_sq):
+                 if pinner_sq in sq_to_idx:
+                    edges.append([sq_to_idx[pinner_sq], source_idx])
+                    edge_attrs.append(EDGE_TYPE_TO_INT["PIN"])
 
-    # --- 2. Virtual Turn Node Creation (ANSATZ 3) ---
-    turn_node_idx = len(node_features)
-    # The turn node is placed at the center of the board (3.5, 3.5) for visualization/embedding purposes.
-    turn_node_features = [PIECE_TO_INT["TURN_NODE"], 3.5, 3.5, turn_feature]
-    node_features.append(turn_node_features)
+        # X-Ray attacks logic
+        piece = board.piece_at(source_sq)
+        if piece and piece.piece_type in [chess.ROOK, chess.BISHOP, chess.QUEEN]:
+            for blocker_sq in board.attacks(source_sq):
+                if board.piece_at(blocker_sq) and board.color_at(blocker_sq) != piece.color:
+                    file_dir = chess.square_file(blocker_sq) - chess.square_file(source_sq)
+                    rank_dir = chess.square_rank(blocker_sq) - chess.square_rank(source_sq)
+                    step_file = 0 if file_dir == 0 else (1 if file_dir > 0 else -1)
+                    step_rank = 0 if rank_dir == 0 else (1 if rank_dir > 0 else -1)
 
-    # --- 3. Edge Creation ---
-    edge_indices = []
-    edge_attrs = []
+                    current_sq = blocker_sq
+                    while True:
+                        next_file = chess.square_file(current_sq) + step_file
+                        next_rank = chess.square_rank(current_sq) + step_rank
+                        if not (0 <= next_file <= 7 and 0 <= next_rank <= 7): break
 
-    # Piece-to-piece edges (Attacks/Defends)
-    for source_square, source_node_idx in square_to_node_idx.items():
-        source_piece = board.piece_at(source_square)
-        attacked_squares = board.attacks(source_square)
-        for target_square in attacked_squares:
-            if target_square in square_to_node_idx:
-                target_node_idx = square_to_node_idx[target_square]
-                target_piece = board.piece_at(target_square)
-                edge_type = EDGE_TYPE_TO_INT["ATTACKS"] if source_piece.color != target_piece.color else EDGE_TYPE_TO_INT["DEFENDS"]
-                edge_indices.append([source_node_idx, target_node_idx])
-                edge_attrs.append(edge_type)
+                        current_sq = chess.square(next_file, next_rank)
+                        if board.piece_at(current_sq):
+                            if board.color_at(current_sq) != piece.color and current_sq in sq_to_idx:
+                                edges.append([source_idx, sq_to_idx[current_sq]])
+                                edge_attrs.append(EDGE_TYPE_TO_INT["XRAY"])
+                            break
 
-    # Turn-node-to-piece edges
-    for piece_node_idx in range(turn_node_idx): # All nodes except the turn node itself
-        edge_indices.append([turn_node_idx, piece_node_idx])
-        edge_attrs.append(EDGE_TYPE_TO_INT["TURN_CONNECTION"])
-
-    # --- 4. Global Feature Creation ---
-    # All global features must be 2D tensors [1, num_features] for correct batching.
-
-    # ANSATZ 1: Global graph attribute for turn
-    turn_global = torch.tensor([[turn_feature]], dtype=torch.float32)
-
-    # Castling rights
-    castling_rights = torch.tensor([[
-        board.has_kingside_castling_rights(chess.WHITE),
-        board.has_queenside_castling_rights(chess.WHITE),
-        board.has_kingside_castling_rights(chess.BLACK),
-        board.has_queenside_castling_rights(chess.BLACK),
-    ]], dtype=torch.float32)
-
-    # En passant square (one-hot encoding)
-    en_passant_vec = torch.zeros(1, 65, dtype=torch.float32)
-    if board.ep_square:
-        en_passant_vec[0, board.ep_square] = 1.0
-    else:
-        en_passant_vec[0, 64] = 1.0 # Index 64 for no en passant square
-
-    # Halfmove clock (normalized) and fullmove number
-    halfmove_clock = torch.tensor([[board.halfmove_clock / 100.0]], dtype=torch.float32)
-    fullmove_number = torch.tensor([[board.fullmove_number]], dtype=torch.float32)
-
-    # --- 5. Convert to Tensors and create Data object ---
-    x = torch.tensor(node_features, dtype=torch.float)
-    edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous() if edge_indices else torch.empty((2, 0), dtype=torch.long)
-    edge_attr = torch.tensor(edge_attrs, dtype=torch.long) if edge_attrs else torch.empty((0,), dtype=torch.long)
-
-    data = Data(
-        x=x,
-        edge_index=edge_index,
-        edge_attr=edge_attr,
-        # Global attributes
-        turn=turn_global,
-        castling_rights=castling_rights,
-        en_passant=en_passant_vec,
-        halfmove_clock=halfmove_clock,
-        fullmove_number=fullmove_number
+    return Data(
+        x=torch.tensor(nodes, dtype=torch.float),
+        edge_index=torch.tensor(edges, dtype=torch.long).t().contiguous() if edges else torch.empty((2, 0), dtype=torch.long),
+        edge_attr=torch.tensor(edge_attrs, dtype=torch.long) if edge_attrs else torch.empty((0,), dtype=torch.long),
     )
 
-    return data
-
 if __name__ == '__main__':
-    # Test with the starting position
-    start_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    graph = fen_to_graph_data(start_fen)
+    fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+    g = fen_to_graph_data(fen)
 
-    print("--- Testing fen_to_graph_data (Updated) ---")
-    print(f"FEN: {start_fen}")
-    print(f"Graph object: {graph}")
+    b = chess.Board(fen)
+    assert g.x.shape[0] == b.occupied.bit_count(), "Node count should be equal to number of pieces"
+    assert g.x.shape[1] == TOTAL_NODE_FEATURES, f"Expected {TOTAL_NODE_FEATURES} features per node"
 
-    # 1. Validate Node Information
-    assert graph.num_nodes == 33, f"Expected 32 pieces + 1 turn node, but got {graph.num_nodes}"
-    assert graph.x.shape[1] == NUM_FEATURES_PER_NODE, f"Expected {NUM_FEATURES_PER_NODE} node features, but got {graph.x.shape[1]}"
-    print(f"Correct number of nodes (33) and node features ({NUM_FEATURES_PER_NODE}) found.")
+    sq_map = {sq: i for i, (sq, p) in enumerate(sorted(b.piece_map().items()))}
+    king_node_idx = sq_map[chess.E1]
+    king_node = g.x[king_node_idx]
 
-    # 2. Validate Turn Feature in Nodes (Ansatz 2)
-    # For 'w' (white to move), the turn feature should be 1.0
-    assert torch.all(graph.x[:, 3] == 1.0).item(), "Turn feature in nodes should be 1.0 for white to move."
-    print("Node-level turn feature is correct.")
+    assert king_node[3] == 1.0, "Turn should be White (1.0)"
+    assert torch.all(king_node[4:8] == torch.tensor([1.0, 1.0, 1.0, 1.0])), "Castling rights incorrect"
+    assert king_node[10] == 1.0, "Node should be marked as real"
 
-    # 3. Validate Virtual Turn Node (Ansatz 3)
-    turn_node_features = graph.x[-1] # The last node is the turn node
-    assert turn_node_features[0] == PIECE_TO_INT["TURN_NODE"], "Virtual turn node has incorrect piece type."
-    print("Virtual turn node is correctly identified.")
+    # Test X-Ray edge
+    fen_xray = "8/8/8/4k3/4p3/4Q3/8/8 w - - 0 1"
+    g_xray = fen_to_graph_data(fen_xray)
+    b_xray = chess.Board(fen_xray)
+    sq_map_xray = {sq: i for i, (sq, p) in enumerate(sorted(b_xray.piece_map().items()))}
 
-    # 4. Validate Global Attributes (Ansatz 1 and others)
-    assert graph.turn.shape == (1, 1) and graph.turn.item() == 1.0, "Global turn attribute is incorrect."
-    expected_castling = torch.tensor([[True, True, True, True]], dtype=torch.float32)
-    assert torch.equal(graph.castling_rights, expected_castling), "Castling rights are incorrect."
-    assert graph.en_passant.shape == (1, 65) and graph.en_passant[0, 64] == 1.0, "En passant vector is incorrect."
-    assert graph.halfmove_clock.item() == 0.0, "Halfmove clock should be 0."
-    assert graph.fullmove_number.item() == 1.0, "Fullmove number should be 1."
-    print("All global graph attributes are correct for the starting FEN.")
+    queen_idx = sq_map_xray[chess.E3]
+    king_idx = sq_map_xray[chess.E5]
 
-    # 5. Validate Edges
-    # 32 piece nodes, each connected to the turn node -> 32 edges
-    # Plus piece-to-piece attacks/defenses
-    num_turn_node_edges = 32
-    assert graph.num_edges > num_turn_node_edges, f"Expected more than {num_turn_node_edges} edges, but got {graph.num_edges}."
-    print(f"Edge count ({graph.num_edges}) seems reasonable.")
+    found = any(s == queen_idx and t == king_idx and a == EDGE_TYPE_TO_INT["XRAY"]
+                for s, t, a in zip(g_xray.edge_index[0].tolist(), g_xray.edge_index[1].tolist(), g_xray.edge_attr.tolist()))
 
-    print("\n--- All Tests Passed Successfully! ---")
+    assert found, "X-Ray edge from e3 to e5 not found"
 
-    # A more complex mid-game position
-    mid_game_fen = "r1b2rk1/pp1p1p1p/1qn2np1/4p3/4P3/1N1B1N2/PPPQ1PPP/R3K2R b KQ - 1 11"
-    mid_game_graph = fen_to_graph_data(mid_game_fen)
-    print("\n--- Testing mid-game position ---")
-    print(f"FEN: {mid_game_fen}")
-    print(f"Graph object: {mid_game_graph}")
-    print(f"Number of nodes: {mid_game_graph.num_nodes}") # Should be 28 pieces + 1 turn node = 29
-    assert mid_game_graph.num_nodes == 29
-    print(f"Number of edges: {mid_game_graph.num_edges}")
-    assert mid_game_graph.turn.item() == -1.0, "Turn should be black (-1.0) in mid-game FEN."
-    assert torch.all(mid_game_graph.x[:, 3] == -1.0).item(), "Node-level turn feature should be -1.0."
-    print("Mid-game position validation successful.")
+    print("All tests passed!")

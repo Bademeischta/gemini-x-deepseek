@@ -9,15 +9,15 @@ class TestGraphUtils(unittest.TestCase):
     def test_fen_to_graph_startpos(self):
         """
         Tests if the graph conversion for the starting position is correct.
-        - Should have 33 nodes (32 pieces + 1 virtual turn node).
+        - Should have 32 nodes (one for each piece).
         - Edge indices should be within the valid range.
         """
         graph = fen_to_graph_data(STARTING_FEN)
-        self.assertEqual(graph.num_nodes, 33, "Should have 33 nodes for the starting position")
+        self.assertEqual(graph.num_nodes, 32, "Should have 32 nodes for the starting position")
 
         # Check if edge indices are valid
         if graph.edge_index.numel() > 0:
-            self.assertTrue(graph.edge_index.max() < 33, "Edge indices should be less than the number of nodes")
+            self.assertTrue(graph.edge_index.max() < 32, "Edge indices should be less than the number of nodes")
             self.assertTrue(graph.edge_index.min() >= 0, "Edge indices should be non-negative")
 
     def test_fen_to_graph_node_features(self):
@@ -56,7 +56,7 @@ class TestGraphUtils(unittest.TestCase):
         """Tests the graph conversion for an empty board."""
         empty_fen = "8/8/8/8/8/8/8/8 w - - 0 1"
         graph = fen_to_graph_data(empty_fen)
-        self.assertEqual(graph.num_nodes, 1, "Empty board should have 1 node (the virtual turn node)")
+        self.assertEqual(graph.num_nodes, 0, "Empty board should have 0 nodes")
         self.assertEqual(graph.edge_index.numel(), 0, "Empty board should have 0 edges")
 
 if __name__ == '__main__':

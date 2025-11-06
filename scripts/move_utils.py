@@ -1,89 +1,110 @@
 import chess
 
-# TODO: Optimize to ~1880 legal moves only
-# Current: ~4600 (includes many impossible moves like 'a1a3' for a rook)
-# Benefit: ~2.5x smaller policy head, faster training, and smaller model size.
-# See for reference: https://github.com/official-stockfish/Stockfish/discussions/4231
+# --- New Policy Head Configuration ---
+# The model will have two policy heads:
+# 1. 'from_square': A distribution over the 64 possible starting squares.
+# 2. 'to_square': A distribution over the 64 possible destination squares.
+POLICY_HEAD_FROM_SIZE = 64
+POLICY_HEAD_TO_SIZE = 64
 
-def _get_all_possible_moves():
+# TODO: The current "From-To" representation does not explicitly handle promotions.
+# For a move like 'e7e8q', the target will be (from=e7, to=e8). The network
+# must implicitly learn to associate this move with a promotion based on the pawn's position.
+# A future improvement could be to add a separate small head to predict the promotion piece.
+
+def uci_to_policy_targets(uci_move_str: str) -> dict:
     """
-    Generates a comprehensive list of all possible UCI moves in chess.
-    This is a simplified approach; a truly exhaustive list is very large.
-    We'll create a mapping for standard moves. Under-promotions are less common
-    and can be added if needed.
+    Converts a UCI move string into a dictionary of target indices for the policy heads.
+
+    Args:
+        uci_move_str: The move in UCI format (e.g., "e2e4", "a7a8q").
+
+    Returns:
+        A dictionary with 'from' and 'to' keys, containing the integer indices
+        (0-63) for the respective squares. Returns {'from': -1, 'to': -1} for invalid
+        or empty strings.
     """
-    moves = []
-    squares = [chess.square_name(s) for s in chess.SQUARES]
+    if not uci_move_str:
+        return {'from': -1, 'to': -1} # Invalid target for loss function to ignore
 
-    # 1. Standard moves (e.g., "e2e4")
-    for from_sq in squares:
-        for to_sq in squares:
-            if from_sq != to_sq:
-                moves.append(from_sq + to_sq)
+    try:
+        move = chess.Move.from_uci(uci_move_str)
+        return {
+            'from': move.from_square,
+            'to': move.to_square
+        }
+    except chess.InvalidMoveError:
+        # This can happen if the UCI string is malformed (e.g., "e2e9")
+        return {'from': -1, 'to': -1}
 
-    # 2. Promotions (e.g., "e7e8q")
-    # Pawn moves from rank 7 to 8 (white) or 2 to 1 (black)
-    for from_file in "abcdefgh":
-        for promotion_piece in "qrbn":
-            # White promotion
-            moves.append(f"{from_file}7{from_file}8{promotion_piece}")
-            # Black promotion
-            moves.append(f"{from_file}2{from_file}1{promotion_piece}")
-
-    return sorted(list(set(moves)))
-
-# --- Global Move Mapping ---
-# This list defines the canonical ordering for converting moves to indices.
-ALL_POSSIBLE_MOVES = _get_all_possible_moves()
-
-# Create a mapping from the move (UCI string) to its index
-MOVE_TO_INDEX = {move: i for i, move in enumerate(ALL_POSSIBLE_MOVES)}
-
-# The size of the policy head must match the number of possible moves
-POLICY_OUTPUT_SIZE = len(ALL_POSSIBLE_MOVES)
-
-def uci_to_index(uci_move: str) -> int:
+def policy_targets_to_uci(from_square: int, to_square: int, board: chess.Board) -> str:
     """
-    Converts a UCI move string to its corresponding integer index.
-    Returns 0 if the move is not found (assumed to be an invalid or unexpected move).
+    Converts from and to square indices back to a legal UCI move string.
+    This is more complex as it needs the board context to determine promotions.
     """
-    return MOVE_TO_INDEX.get(uci_move, 0)
+    move = chess.Move(from_square, to_square)
 
-def index_to_uci(index: int) -> str:
-    """
-    Converts an integer index back to its UCI move string.
-    Raises IndexError if the index is out of bounds.
-    """
-    return ALL_POSSIBLE_MOVES[index]
+    # Check if the move is a promotion and handle it
+    if board.piece_at(from_square) and board.piece_at(from_square).piece_type == chess.PAWN:
+        if chess.square_rank(to_square) == 0 or chess.square_rank(to_square) == 7:
+            # Assume queen promotion for simplicity in this context
+            move.promotion = chess.QUEEN
+
+    # Ensure the move is legal before returning its UCI representation
+    if move in board.legal_moves:
+        return move.uci()
+
+    # Fallback for pawn moves that might be promotions but weren't specified as such
+    # (e.g., if the move was just 'e7e8' instead of 'e7e8q')
+    move.promotion = chess.QUEEN
+    if move in board.legal_moves:
+        return move.uci()
+
+    # If the move is still not legal, we cannot determine the correct UCI string
+    # (this can happen with ambiguous moves or illegal predictions)
+    return "0000" # UCI null move
 
 if __name__ == '__main__':
-    print("--- Testing Move Utilities ---")
-    print(f"Total number of unique UCI moves mapped: {POLICY_OUTPUT_SIZE}")
+    print("--- Testing New Move Utilities (From-To Representation) ---")
 
-    # Test a few conversions
-    move1 = "e2e4"
-    idx1 = uci_to_index(move1)
-    print(f"'{move1}' -> index {idx1}")
-    assert index_to_uci(idx1) == move1
+    # Test standard move
+    targets1 = uci_to_policy_targets("e2e4")
+    print(f"'e2e4' -> {targets1}")
+    assert targets1 == {'from': chess.E2, 'to': chess.E4}
 
-    move2 = "g8f6"
-    idx2 = uci_to_index(move2)
-    print(f"'{move2}' -> index {idx2}")
-    assert index_to_uci(idx2) == move2
+    # Test capture
+    targets2 = uci_to_policy_targets("g1f3")
+    print(f"'g1f3' -> {targets2}")
+    assert targets2 == {'from': chess.G1, 'to': chess.F3}
 
-    move3 = "a7a8q" # White pawn promotion
-    idx3 = uci_to_index(move3)
-    print(f"'{move3}' -> index {idx3}")
-    assert index_to_uci(idx3) == move3
+    # Test promotion
+    targets3 = uci_to_policy_targets("a7a8q")
+    print(f"'a7a8q' -> {targets3}")
+    assert targets3 == {'from': chess.A7, 'to': chess.A8}
 
-    # Test a move that is guaranteed not to be in the MOVE_TO_INDEX map.
-    # The original test used 'e2e5', which is an illegal chess move but is
-    # included in the naively generated move list. The .get() method correctly
-    # prevents a KeyError, which is the goal of this fix. The deeper issue of
-    # move generation is addressed in a later step.
-    non_existent_move = "z1z9"
-    idx_non_existent = uci_to_index(non_existent_move)
-    print(f"Non-existent move '{non_existent_move}' -> index {idx_non_existent}")
-    assert idx_non_existent == 0
+    # Test invalid move
+    targets4 = uci_to_policy_targets("e2e9")
+    print(f"Invalid move 'e2e9' -> {targets4}")
+    assert targets4 == {'from': -1, 'to': -1}
+
+    # Test empty string
+    targets5 = uci_to_policy_targets("")
+    print(f"Empty string '' -> {targets5}")
+    assert targets5 == {'from': -1, 'to': -1}
+
+    # Test roundtrip (requires a board context)
+    board = chess.Board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+    uci_move = "e2e4"
+    targets = uci_to_policy_targets(uci_move)
+    reconstructed_uci = policy_targets_to_uci(targets['from'], targets['to'], board)
+    print(f"\nRoundtrip test for 'e2e4': {targets} -> '{reconstructed_uci}'")
+    assert uci_move == reconstructed_uci
+
+    board_promo = chess.Board("rnbqkbnr/pPpppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+    uci_promo = "b7a8q"
+    targets_promo = uci_to_policy_targets(uci_promo)
+    reconstructed_promo = policy_targets_to_uci(targets_promo['from'], targets_promo['to'], board_promo)
+    print(f"Roundtrip test for promotion '{uci_promo}': {targets_promo} -> '{reconstructed_promo}'")
+    assert uci_promo == reconstructed_promo
 
     print("\nAll tests passed!")
