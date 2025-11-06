@@ -19,21 +19,30 @@ from scripts.model import RCNModel
 from scripts.graph_utils import fen_to_graph_data, TOTAL_NODE_FEATURES, NUM_EDGE_FEATURES
 
 # --- Logging Setup ---
-log_formatter = logging.Formatter('%(asctime)s - %(message)s')
-log_handler = RotatingFileHandler(
-    config.ENGINE_LOG_PATH,
-    maxBytes=config.LOG_MAX_BYTES,
-    backupCount=config.LOG_BACKUP_COUNT
-)
-log_handler.setFormatter(log_formatter)
+# Logger is configured in setup_logging() to avoid issues in test environments.
 logger = logging.getLogger()
-logger.addHandler(log_handler)
-logger.setLevel(logging.DEBUG)
 
+def setup_logging():
+    """Configures the logger to use a rotating file handler."""
+    # Avoid adding handlers multiple times if this function is called more than once.
+    if any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+        return
+
+    if config.ENGINE_LOG_PATH:
+        os.makedirs(os.path.dirname(config.ENGINE_LOG_PATH), exist_ok=True)
+        log_formatter = logging.Formatter('%(asctime)s - %(message)s')
+        log_handler = RotatingFileHandler(
+            config.ENGINE_LOG_PATH,
+            maxBytes=config.LOG_MAX_BYTES,
+            backupCount=config.LOG_BACKUP_COUNT
+        )
+        log_handler.setFormatter(log_formatter)
+        logger.addHandler(log_handler)
+        logger.setLevel(logging.DEBUG)
 
 def log_command(cmd_type: str, command: str) -> None:
     """Logs a command sent to or from the engine."""
-    logging.info(f"{cmd_type}: {command.strip()}")
+    logger.info(f"{cmd_type}: {command.strip()}")
 
 def send_command(command: str, stdout: IO[str] = sys.stdout) -> None:
     """Sends a command to the GUI and logs it."""
@@ -272,6 +281,7 @@ def uci_loop(stdin: IO[str] = sys.stdin, stdout: IO[str] = sys.stdout) -> None:
 
 def main() -> None:
     """Main entry point that runs the UCI loop with standard I/O."""
+    setup_logging()
     uci_loop(sys.stdin, sys.stdout)
 
 def handle_position(parts: List[str], board: chess.Board) -> None:

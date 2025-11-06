@@ -87,6 +87,16 @@ python engine.py
 
 ### Google Colab Nutzung
 
+**WICHTIG:** Dieses Projekt ist für die persistente Speicherung in Google Drive ausgelegt, um den Fortschritt bei langen Datenverarbeitungs- und Trainingsläufen zu sichern.
+
+**0. Google Drive einbinden:**
+Führen Sie als Allererstes diesen Befehl in einer Colab-Zelle aus, um Ihr Google Drive zu verbinden. Sie müssen die Anfrage in einem Popup-Fenster autorisieren.
+```python
+from google.colab import drive
+drive.mount('/content/drive')
+```
+Alle Daten, Modelle und Checkpoints werden im Ordner `MyDrive/RCN_Project` in Ihrem Drive gespeichert.
+
 **1. Notebook einrichten:**
 Öffnen Sie ein neues Colab-Notebook und stellen Sie sicher, dass Sie eine GPU-Laufzeit verwenden (`Laufzeit` -> `Laufzeittyp ändern` -> `T4 GPU`).
 
@@ -99,7 +109,7 @@ Führen Sie die folgenden Befehle in einer Code-Zelle aus, um das Projekt zu klo
 ```
 
 **3. Daten-Upload:**
-Laden Sie Ihre `.jsonl`-Datensätze in den `data/`-Ordner im Colab-Dateisystem hoch. Sie können dies manuell über die Seitenleiste tun oder `gdown` bzw. `wget` verwenden, wenn Ihre Daten online verfügbar sind.
+Laden Sie Ihre `.jsonl`-Datensätze in den Ordner `/content/drive/MyDrive/RCN_Project/data/` in Ihrem Google Drive hoch. Das Skript `scripts/process_elite_games.py` speichert seine Ergebnisse ebenfalls dort.
 
 **4. Training in Colab:**
 Starten Sie das Training, indem Sie das Skript aus einer Zelle heraus aufrufen:
