@@ -2,137 +2,111 @@ import torch
 import chess
 from torch_geometric.data import Data
 
-# --- Mappings ---
 PIECE_TO_INT = {
-    (chess.PAWN, chess.WHITE): 0, (chess.KNIGHT, chess.WHITE): 1, (chess.BISHOP, chess.WHITE): 2,
-    (chess.ROOK, chess.WHITE): 3, (chess.QUEEN, chess.WHITE): 4, (chess.KING, chess.WHITE): 5,
-    (chess.PAWN, chess.BLACK): 6, (chess.KNIGHT, chess.BLACK): 7, (chess.BISHOP, chess.BLACK): 8,
-    (chess.ROOK, chess.BLACK): 9, (chess.QUEEN, chess.BLACK): 10, (chess.KING, chess.BLACK): 11,
+    (p_type, color): i for i, (p_type, color) in enumerate(
+        (p, c) for c in (chess.WHITE, chess.BLACK) for p in
+        (chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN, chess.KING)
+    )
 }
-NUM_NODE_FEATURES_BASE = 12 # 6 types * 2 colors
-
-EDGE_TYPE_TO_INT = {
-    "ATTACKS": 0,
-    "DEFENDS": 1,
-    "PIN": 2, # Fesselung
-}
-NUM_EDGE_FEATURES_BASE = 3
+EDGE_TYPE_TO_INT = {"ATTACKS": 0, "DEFENDS": 1, "PIN": 2, "XRAY": 3}
+NUM_EDGE_FEATURES = len(EDGE_TYPE_TO_INT)
+TOTAL_NODE_FEATURES = 11 # piece, file, rank, turn, castling(4), ep, 50-move, is_real
 
 def fen_to_graph_data(fen: str) -> Data:
-    """
-    Converts a FEN string representing a chess position into a
-    torch_geometric.data.Data object.
-    """
     board = chess.Board(fen)
-    turn_feature = 1.0 if board.turn == chess.WHITE else -1.0
+    turn = 1.0 if board.turn == chess.WHITE else -1.0
 
-    node_features = []
-    square_to_node_idx = {} # Map chess.Square to the index in our node list
+    castling_rights = [
+        1.0 if board.has_kingside_castling_rights(chess.WHITE) else 0.0,
+        1.0 if board.has_queenside_castling_rights(chess.WHITE) else 0.0,
+        1.0 if board.has_kingside_castling_rights(chess.BLACK) else 0.0,
+        1.0 if board.has_queenside_castling_rights(chess.BLACK) else 0.0,
+    ]
+    half_move_clock = board.halfmove_clock / 100.0
+    ep_square = (board.ep_square / 63.0) if board.ep_square else 0.0
 
-    # --- 1. Node Creation ---
-    for square in chess.SQUARES:
-        piece = board.piece_at(square)
-        if piece:
-            piece_type_int = PIECE_TO_INT[(piece.piece_type, piece.color)]
-            file = chess.square_file(square)
-            rank = chess.square_rank(square)
+    nodes, sq_to_idx = [], {}
+    for i, (sq, piece) in enumerate(sorted(board.piece_map().items())):
+        real_node_features = [
+            PIECE_TO_INT[(piece.piece_type, piece.color)],
+            chess.square_file(sq),
+            chess.square_rank(sq),
+            turn
+        ] + castling_rights + [ep_square, half_move_clock, 1.0]
+        nodes.append(real_node_features)
+        sq_to_idx[sq] = i
 
-            # Node Features: [piece_type, file, rank, turn (als node feature)]
-            node_features.append([piece_type_int, file, rank, turn_feature])
-            square_to_node_idx[square] = len(node_features) - 1
+    edges, edge_attrs = [], []
+    for source_sq, source_idx in sq_to_idx.items():
+        # Attacks/Defends
+        for target_sq in board.attacks(source_sq):
+            if target_sq in sq_to_idx:
+                edges.append([source_idx, sq_to_idx[target_sq]])
+                edge_attrs.append(EDGE_TYPE_TO_INT["ATTACKS" if board.color_at(target_sq) != board.color_at(source_sq) else "DEFENDS"])
+        # Pins
+        if board.is_pinned(board.color_at(source_sq), source_sq):
+            for pinner_sq in board.pin(board.color_at(source_sq), source_sq):
+                 if pinner_sq in sq_to_idx:
+                    edges.append([sq_to_idx[pinner_sq], source_idx])
+                    edge_attrs.append(EDGE_TYPE_TO_INT["PIN"])
 
-    # --- 2. Edge Creation (Attacks / Defends) ---
-    edge_indices = []
-    edge_attrs = []
+        # X-Ray attacks logic
+        piece = board.piece_at(source_sq)
+        if piece and piece.piece_type in [chess.ROOK, chess.BISHOP, chess.QUEEN]:
+            for blocker_sq in board.attacks(source_sq):
+                if board.piece_at(blocker_sq) and board.color_at(blocker_sq) != piece.color:
+                    file_dir = chess.square_file(blocker_sq) - chess.square_file(source_sq)
+                    rank_dir = chess.square_rank(blocker_sq) - chess.square_rank(source_sq)
+                    step_file = 0 if file_dir == 0 else (1 if file_dir > 0 else -1)
+                    step_rank = 0 if rank_dir == 0 else (1 if rank_dir > 0 else -1)
 
-    for source_square, source_node_idx in square_to_node_idx.items():
-        source_piece = board.piece_at(source_square)
-        attacked_squares = board.attacks(source_square)
+                    current_sq = blocker_sq
+                    while True:
+                        next_file = chess.square_file(current_sq) + step_file
+                        next_rank = chess.square_rank(current_sq) + step_rank
+                        if not (0 <= next_file <= 7 and 0 <= next_rank <= 7): break
 
-        for target_square in attacked_squares:
-            if target_square in square_to_node_idx:
-                target_node_idx = square_to_node_idx[target_square]
-                target_piece = board.piece_at(target_square)
+                        current_sq = chess.square(next_file, next_rank)
+                        if board.piece_at(current_sq):
+                            if board.color_at(current_sq) != piece.color and current_sq in sq_to_idx:
+                                edges.append([source_idx, sq_to_idx[current_sq]])
+                                edge_attrs.append(EDGE_TYPE_TO_INT["XRAY"])
+                            break
 
-                edge_type = EDGE_TYPE_TO_INT["ATTACKS"] if source_piece.color != target_piece.color else EDGE_TYPE_TO_INT["DEFENDS"]
-                edge_indices.append([source_node_idx, target_node_idx])
-                edge_attrs.append(edge_type)
-
-    # --- 3. Edge Creation (Pins) ---
-    # Diese Logik ist SEPARAT, da "is_pinned" eine globale Eigenschaft ist.
-    for target_square, target_node_idx in square_to_node_idx.items():
-        target_piece = board.piece_at(target_square)
-
-        # Prüfe, ob die Figur (target) gefesselt ist
-        if board.is_pinned(target_piece.color, target_square):
-            # Finde die Figur, die fesselt (pinner)
-            pinner_square = board.pinner(target_piece.color, target_square)
-
-            # pinner_square ist None, wenn der König direkt angegriffen wird (Schach)
-            if pinner_square is not None and pinner_square in square_to_node_idx:
-                source_node_idx = square_to_node_idx[pinner_square]
-
-                # Füge eine "PIN"-Kante vom Fessler (source) zur gefesselten Figur (target) hinzu
-                edge_indices.append([source_node_idx, target_node_idx])
-                edge_attrs.append(EDGE_TYPE_TO_INT["PIN"])
-
-
-    # --- 4. Convert to Tensors ---
-    if node_features:
-        x = torch.tensor(node_features, dtype=torch.float)
-    else:
-        # Leeres Brett
-        x = torch.empty((0, 4), dtype=torch.float)
-
-    if edge_indices:
-        edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
-        edge_attr = torch.tensor(edge_attrs, dtype=torch.long)
-    else:
-        edge_index = torch.empty((2, 0), dtype=torch.long)
-        edge_attr = torch.empty((0,), dtype=torch.long)
-
-    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-
-    # Globale Features (korrekt als [1, N] tensor)
-    data.turn = torch.tensor([[turn_feature]], dtype=torch.float)
-
-    return data
+    return Data(
+        x=torch.tensor(nodes, dtype=torch.float),
+        edge_index=torch.tensor(edges, dtype=torch.long).t().contiguous() if edges else torch.empty((2, 0), dtype=torch.long),
+        edge_attr=torch.tensor(edge_attrs, dtype=torch.long) if edge_attrs else torch.empty((0,), dtype=torch.long),
+    )
 
 if __name__ == '__main__':
-    print("\n--- Testing Pin Detection ---")
-    # FEN: Weißer Turm auf a2 fesselt schwarze Dame auf e4 an schwarzen König auf e8.
-    pin_fen = "4k3/8/8/8/4q3/8/R7/4K3 w - - 0 1"
-    pin_graph = fen_to_graph_data(pin_fen)
-    board = chess.Board(pin_fen)
+    fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+    g = fen_to_graph_data(fen)
 
-    print(f"FEN: {pin_fen}")
+    b = chess.Board(fen)
+    assert g.x.shape[0] == b.occupied.bit_count(), "Node count should be equal to number of pieces"
+    assert g.x.shape[1] == TOTAL_NODE_FEATURES, f"Expected {TOTAL_NODE_FEATURES} features per node"
 
-    # Finde die Knoten-Indizes
-    square_to_idx = {}
-    for i, features in enumerate(pin_graph.x):
-        f, r = int(features[1].item()), int(features[2].item())
-        sq = chess.square(f, r)
-        square_to_idx[sq] = i
+    sq_map = {sq: i for i, (sq, p) in enumerate(sorted(b.piece_map().items()))}
+    king_node_idx = sq_map[chess.E1]
+    king_node = g.x[king_node_idx]
 
-    ra2_idx = square_to_idx[chess.A2]
-    qe4_idx = square_to_idx[chess.E4]
-    ke8_idx = square_to_idx[chess.E8]
+    assert king_node[3] == 1.0, "Turn should be White (1.0)"
+    assert torch.all(king_node[4:8] == torch.tensor([1.0, 1.0, 1.0, 1.0])), "Castling rights incorrect"
+    assert king_node[10] == 1.0, "Node should be marked as real"
 
-    print(f"Rook (Pinner) Index: {ra2_idx}")
-    print(f"Queen (Pinned) Index: {qe4_idx}")
+    # Test X-Ray edge
+    fen_xray = "8/8/8/4k3/4p3/4Q3/8/8 w - - 0 1"
+    g_xray = fen_to_graph_data(fen_xray)
+    b_xray = chess.Board(fen_xray)
+    sq_map_xray = {sq: i for i, (sq, p) in enumerate(sorted(b_xray.piece_map().items()))}
 
-    # Suche nach der PIN-Kante
-    pin_edge_found = False
-    pin_edge_type = EDGE_TYPE_TO_INT["PIN"]
+    queen_idx = sq_map_xray[chess.E3]
+    king_idx = sq_map_xray[chess.E5]
 
-    for i in range(pin_graph.num_edges):
-        source = pin_graph.edge_index[0, i].item()
-        target = pin_graph.edge_index[1, i].item()
-        attr = pin_graph.edge_attr[i].item()
+    found = any(s == queen_idx and t == king_idx and a == EDGE_TYPE_TO_INT["XRAY"]
+                for s, t, a in zip(g_xray.edge_index[0].tolist(), g_xray.edge_index[1].tolist(), g_xray.edge_attr.tolist()))
 
-        if source == ra2_idx and target == qe4_idx and attr == pin_edge_type:
-            pin_edge_found = True
-            break
+    assert found, "X-Ray edge from e3 to e5 not found"
 
-    assert pin_edge_found, "FEHLER: Die PIN-Kante vom Turm (a2) zur Dame (e4) wurde nicht erstellt!"
-    print("Pin-Kanten-Validierung erfolgreich.")
+    print("All tests passed!")
