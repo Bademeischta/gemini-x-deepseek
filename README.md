@@ -89,13 +89,7 @@ python engine.py
 
 **WICHTIG:** Dieses Projekt ist für die persistente Speicherung in Google Drive ausgelegt, um den Fortschritt bei langen Datenverarbeitungs- und Trainingsläufen zu sichern.
 
-**0. Google Drive einbinden:**
-Führen Sie als Allererstes diesen Befehl in einer Colab-Zelle aus, um Ihr Google Drive zu verbinden. Sie müssen die Anfrage in einem Popup-Fenster autorisieren.
-```python
-from google.colab import drive
-drive.mount('/content/drive')
-```
-Alle Daten, Modelle und Checkpoints werden im Ordner `MyDrive/RCN_Project` in Ihrem Drive gespeichert.
+> "Wenn Sie die Skripte (z.B. !python main.py process-data) in Colab ausführen, erkennt das Programm dies automatisch und bittet Sie um die Autorisierung, Ihr Google Drive einzubinden. Alle Daten werden persistent in MyDrive/RCN_Project/ gespeichert."
 
 **1. Notebook einrichten:**
 Öffnen Sie ein neues Colab-Notebook und stellen Sie sicher, dass Sie eine GPU-Laufzeit verwenden (`Laufzeit` -> `Laufzeittyp ändern` -> `T4 GPU`).

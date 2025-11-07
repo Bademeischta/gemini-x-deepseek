@@ -20,14 +20,32 @@ GRADIENT_CLIP_NORM = 1.0
 
 import os
 
-# --- File Paths (Google Drive Persistence) ---
-# Base path for the project on Google Drive.
-DRIVE_PROJECT_ROOT = "/content/drive/MyDrive/RCN_Project"
+# --- File Paths (Dynamische Persistenz) ---
 
-# Model and checkpoint paths
+def _is_in_colab():
+    """Prüft, ob das Skript in Google Colab ausgeführt wird."""
+    try:
+        import google.colab
+        return True
+    except ImportError:
+        return False
+
+IS_COLAB = _is_in_colab()
+
+if IS_COLAB:
+    # Wir sind in Google Colab, verwenden den Google Drive Pfad
+    DRIVE_PROJECT_ROOT = "/content/drive/MyDrive/RCN_Project"
+else:
+    # Wir sind lokal oder in Codespaces, verwenden einen relativen Pfad
+    # "." bedeutet das aktuelle Verzeichnis, in dem das Skript läuft.
+    DRIVE_PROJECT_ROOT = "."
+
+# Der Rest der Pfade (MODEL_SAVE_PATH, DATA_DIR etc.)
+# wird von DRIVE_PROJECT_ROOT abgeleitet und ist automatisch korrekt.
 MODEL_DIR = os.path.join(DRIVE_PROJECT_ROOT, "models")
 MODEL_SAVE_PATH = os.path.join(MODEL_DIR, "rcn_model.pth")
 TRAINING_CHECKPOINT_PATH = os.path.join(MODEL_DIR, "training_checkpoint.pth")
+
 
 # Data paths
 DATA_DIR = os.path.join(DRIVE_PROJECT_ROOT, "data")
