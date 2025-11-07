@@ -2,6 +2,22 @@
 import argparse
 import subprocess
 import sys
+from config import IS_COLAB # <--- NEUER IMPORT
+
+def mount_drive_if_colab():
+    """Bindet Google Drive ein, falls das Skript in Colab läuft."""
+    if IS_COLAB:
+        try:
+            from google.colab import drive
+            print("Google Colab erkannt. Binde Google Drive ein...")
+            print("Bitte folgen Sie den Anweisungen im Popup, um Ihr Drive zu autorisieren.")
+            drive.mount('/content/drive')
+            print("Google Drive erfolgreich eingebunden unter /content/drive.")
+        except ImportError:
+            print("Fehler: Läuft anscheinend in Colab, aber 'google.colab' konnte nicht importiert werden.", file=sys.stderr)
+        except Exception as e:
+            print(f"Fehler beim Einbinden von Google Drive: {e}", file=sys.stderr)
+
 
 def run_script(script_path, as_module=False):
     """Executes a Python script and handles errors."""
@@ -27,6 +43,8 @@ def run_script(script_path, as_module=False):
 
 def main():
     """Main entry point for the RCN project."""
+    mount_drive_if_colab() # <--- HIER AUFRUFEN
+
     parser = argparse.ArgumentParser(
         description="RCN Chess Project: A unified command-line interface."
     )

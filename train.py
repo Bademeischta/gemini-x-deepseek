@@ -72,10 +72,14 @@ def train() -> None:
         train_size = int(config.TRAIN_TEST_SPLIT * dataset_len)
         val_size = dataset_len - train_size
 
-        if val_size == 0 and train_size > 0: train_size -= 1; val_size += 1
+        # If the split ratio is not 1.0 and rounding caused the validation set to be empty,
+        # move one sample from the training set to the validation set.
+        if val_size == 0 and train_size > 1 and config.TRAIN_TEST_SPLIT < 1.0:
+            train_size -= 1
+            val_size += 1
 
-        if train_size == 0 or val_size == 0:
-            print("Not enough data for a train/val split. Using all data for training.")
+        if train_size == 0 or (val_size == 0 and config.TRAIN_TEST_SPLIT < 1.0):
+            print("Not enough data for a meaningful train/val split. Using all data for training.")
             train_indices, val_indices = list(range(dataset_len)), []
         else:
             train_subset, val_subset = random_split(dataset, [train_size, val_size])
