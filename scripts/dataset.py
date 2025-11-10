@@ -114,9 +114,20 @@ class ChessGraphDataset(PyGDataset):
 
         policy_targets = uci_to_policy_targets(data_record.get('policy_target', ''))
         graph_data.y = torch.tensor([data_record.get('value', 0.0)], dtype=torch.float32)
-        graph_data.policy_target_from = torch.tensor(policy_targets['from'], dtype=torch.long)
-        graph_data.policy_target_to = torch.tensor(policy_targets['to'], dtype=torch.long)
-        graph_data.policy_target_promo = torch.tensor(policy_targets.get('promo', -1), dtype=torch.long)
+
+        # Validate targets - set ALL to -1 if any invalid
+        from_sq = policy_targets['from']
+        to_sq = policy_targets['to']
+        promo = policy_targets.get('promo', -1)
+
+        # Check if move targets are valid
+        if from_sq < 0 or from_sq >= 64 or to_sq < 0 or to_sq >= 64:
+            # Invalid move - set all to ignore_index
+            from_sq, to_sq, promo = -1, -1, -1
+
+        graph_data.policy_target_from = torch.tensor(from_sq, dtype=torch.long)
+        graph_data.policy_target_to = torch.tensor(to_sq, dtype=torch.long)
+        graph_data.policy_target_promo = torch.tensor(promo, dtype=torch.long)
         graph_data.tactic_flag = torch.tensor([data_record.get('tactic_flag', 0.0)], dtype=torch.float32)
         graph_data.strategic_flag = torch.tensor([data_record.get('strategic_flag', 0.0)], dtype=torch.float32)
 
