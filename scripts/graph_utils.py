@@ -100,13 +100,24 @@ def fen_to_graph_data(fen: str) -> Data:
                                 edge_attrs.append(EDGE_TYPE_TO_INT["XRAY"])
                             break
 
-    edge_attr_tensor = torch.tensor(edge_attrs, dtype=torch.long)
-    edge_attr_one_hot = torch.nn.functional.one_hot(edge_attr_tensor, num_classes=NUM_EDGE_FEATURES).float()
+    # Final validation
+    node_tensor = torch.tensor(nodes, dtype=torch.float)
+    if torch.isnan(node_tensor).any() or torch.isinf(node_tensor).any():
+        raise ValueError(f"Invalid node tensor for FEN {fen}")
+
+    # Handle empty graphs
+    if not edges:
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        edge_attr = torch.empty((0, NUM_EDGE_FEATURES), dtype=torch.float)
+    else:
+        edge_attr_tensor = torch.tensor(edge_attrs, dtype=torch.long)
+        edge_attr = torch.nn.functional.one_hot(edge_attr_tensor, num_classes=NUM_EDGE_FEATURES).float()
+        edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
 
     return Data(
-        x=torch.tensor(nodes, dtype=torch.float),
-        edge_index=torch.tensor(edges, dtype=torch.long).t().contiguous() if edges else torch.empty((2, 0), dtype=torch.long),
-        edge_attr=edge_attr_one_hot if edge_attrs else torch.empty((0, NUM_EDGE_FEATURES), dtype=torch.float),
+        x=node_tensor,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
     )
 
 if __name__ == '__main__':
