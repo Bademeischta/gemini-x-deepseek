@@ -59,18 +59,35 @@ def train() -> None:
         # but we keep it to prevent crashes if files are missing.
         print("One or more data files not found. Creating dummy files.")
         dummy_data = [
-            {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "value": 0.1, "policy_target": "e2e4", "tactic_flag": 1.0},
-            {"fen": "r1b2rk1/pp1p1p1p/1qn2np1/4p3/4P3/1N1B1N2/PPPQ1PPP/R3K2R b KQ - 1 11", "value": -0.5, "policy_target": "a7a5", "strategic_flag": 1.0}
+            # 8 "puzzle" like positions (simple captures or checks)
+            {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "value": 0.1, "policy_target": "e2e4", "tactic_flag": 0.0},
+            {"fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", "value": 0.1, "policy_target": "g1f3", "tactic_flag": 0.0},
+            {"fen": "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 1 3", "value": 0.1, "policy_target": "f1c4", "tactic_flag": 0.0},
+            {"fen": "rnbqkb1r/pppp1ppp/5n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 2 4", "value": 0.1, "policy_target": "f6e4", "tactic_flag": 1.0}, # A capture
+            {"fen": "rnbqk2r/pppp1ppp/5n2/4p3/1bB1P3/2N5/PPPP1PPP/R1BQK1NR w KQkq - 2 5", "value": 0.2, "policy_target": "e1g1", "tactic_flag": 0.0}, # Castling
+            {"fen": "r1bqk2r/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 b kq - 0 6", "value": 0.1, "policy_target": "e8g8", "tactic_flag": 0.0},
+            {"fen": "r1bq1rk1/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w - - 1 7", "value": 0.1, "policy_target": "a2a4", "tactic_flag": 0.0},
+            {"fen": "r1bq1rk1/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 b - - 0 7", "value": 0.1, "policy_target": "d7d6", "tactic_flag": 0.0},
+
+            # 8 "strategic" positions
+            {"fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", "value": 0.0, "policy_target": "c2c3", "strategic_flag": 1.0},
+            {"fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR b KQkq - 0 2", "value": 0.0, "policy_target": "d7d5", "strategic_flag": 1.0},
+            {"fen": "rnbqkbnr/pp2pppp/3p4/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR w KQkq - 0 3", "value": 0.0, "policy_target": "e4d5", "strategic_flag": 1.0},
+            {"fen": "rnbqkbnr/pp2pppp/3p4/8/3pP3/2P5/PP3PPP/RNBQKBNR w KQkq - 0 4", "value": 0.1, "policy_target": "c3d4", "strategic_flag": 1.0},
+            {"fen": "rnbqkbnr/pp2pppp/3p4/8/3PP3/8/PP3PPP/RNBQKBNR b KQkq - 0 4", "value": 0.1, "policy_target": "g8f6", "strategic_flag": 1.0},
+            {"fen": "rnbqkb1r/pp2pppp/3p1n2/8/3PP3/8/PP3PPP/RNBQKBNR w KQkq - 1 5", "value": 0.1, "policy_target": "b1c3", "strategic_flag": 1.0},
+            {"fen": "rnbqkb1r/pp2pppp/3p1n2/8/3PP3/2N5/PP3PPP/R1BQKBNR b KQkq - 2 5", "value": 0.1, "policy_target": "a7a6", "strategic_flag": 1.0},
+            {"fen": "rnbqkb1r/1p2pppp/p2p1n2/8/3PP3/2N5/PP3PPP/R1BQKBNR w KQkq - 0 6", "value": 0.1, "policy_target": "f2f4", "strategic_flag": 1.0},
         ]
-        # We need at least 16 samples for a batch size of 8, so create 8 of each.
+
         if config.DATA_PUZZLES_PATH and not os.path.exists(config.DATA_PUZZLES_PATH):
             with open(config.DATA_PUZZLES_PATH, 'w') as f:
-                for _ in range(8):
-                    f.write(json.dumps(dummy_data[0]) + '\n')
+                for item in dummy_data[:8]:
+                    f.write(json.dumps(item) + '\n')
         if config.DATA_STRATEGIC_PATH and not os.path.exists(config.DATA_STRATEGIC_PATH):
             with open(config.DATA_STRATEGIC_PATH, 'w') as f:
-                for _ in range(8):
-                    f.write(json.dumps(dummy_data[1]) + '\n')
+                for item in dummy_data[8:]:
+                    f.write(json.dumps(item) + '\n')
 
     with ChessGraphDataset(jsonl_paths=jsonl_paths) as dataset:
         dataset_len = len(dataset)
@@ -153,21 +170,16 @@ def train() -> None:
                             raise ValueError("NaN in value output")
 
                         loss_v = loss_value_fn(value, batch.y.view(-1, 1))
-                        # Policy loss with NaN protection
-                        loss_p_from = loss_policy_fn(policy_from, batch.policy_target_from)
-                        loss_p_to = loss_policy_fn(policy_to, batch.policy_target_to)
-                        loss_p_promo = loss_policy_fn(policy_promo, batch.policy_target_promo)
 
-                        # Check each component
-                        if torch.isnan(loss_p_from):
-                            print(f"WARNING: NaN in policy_from loss")
-                            continue
-                        if torch.isnan(loss_p_to):
-                            print(f"WARNING: NaN in policy_to loss")
-                            continue
-                        if torch.isnan(loss_p_promo):
-                            print(f"WARNING: NaN in policy_promo loss")
-                            continue
+                        # --- Safe Policy Loss Calculation ---
+                        # Calculate loss only for valid targets to avoid NaN with CrossEntropyLoss
+                        from_targets = batch.policy_target_from
+                        to_targets = batch.policy_target_to
+                        promo_targets = batch.policy_target_promo
+
+                        loss_p_from = loss_policy_fn(policy_from, from_targets) if (from_targets != -1).any() else torch.tensor(0.0, device=device)
+                        loss_p_to = loss_policy_fn(policy_to, to_targets) if (to_targets != -1).any() else torch.tensor(0.0, device=device)
+                        loss_p_promo = loss_policy_fn(policy_promo, promo_targets) if (promo_targets != -1).any() else torch.tensor(0.0, device=device)
 
                         loss_p = loss_p_from + loss_p_to + loss_p_promo
 
@@ -210,21 +222,15 @@ def train() -> None:
                                     raise ValueError("NaN in validation value output")
 
                                 loss_v = loss_value_fn(value, batch.y.view(-1, 1))
-                                # Policy loss with NaN protection
-                                loss_p_from = loss_policy_fn(policy_from, batch.policy_target_from)
-                                loss_p_to = loss_policy_fn(policy_to, batch.policy_target_to)
-                                loss_p_promo = loss_policy_fn(policy_promo, batch.policy_target_promo)
 
-                                # Check each component
-                                if torch.isnan(loss_p_from):
-                                    print(f"WARNING: NaN in policy_from loss")
-                                    continue
-                                if torch.isnan(loss_p_to):
-                                    print(f"WARNING: NaN in policy_to loss")
-                                    continue
-                                if torch.isnan(loss_p_promo):
-                                    print(f"WARNING: NaN in policy_promo loss")
-                                    continue
+                                # --- Safe Policy Loss Calculation ---
+                                from_targets = batch.policy_target_from
+                                to_targets = batch.policy_target_to
+                                promo_targets = batch.policy_target_promo
+
+                                loss_p_from = loss_policy_fn(policy_from, from_targets) if (from_targets != -1).any() else torch.tensor(0.0, device=device)
+                                loss_p_to = loss_policy_fn(policy_to, to_targets) if (to_targets != -1).any() else torch.tensor(0.0, device=device)
+                                loss_p_promo = loss_policy_fn(policy_promo, promo_targets) if (promo_targets != -1).any() else torch.tensor(0.0, device=device)
 
                                 loss_p = loss_p_from + loss_p_to + loss_p_promo
                                 loss_t = loss_tactic_fn(tactic, batch.tactic_flag.view(-1, 1))
