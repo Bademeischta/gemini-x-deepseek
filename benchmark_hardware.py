@@ -89,21 +89,24 @@ def benchmark_data_transfer(device: torch.device, num_samples: int = 100):
     graphs = [fen_to_graph_data(fen_samples[i % len(fen_samples)]) for i in range(num_samples)]
 
     # Test 1: Einzeltransfer
-    start = time.time()
+    start = time.perf_counter()
     for graph in graphs:
         _ = graph.to(device)
-    single_time = time.time() - start
+    single_time = time.perf_counter() - start
 
-    print(f"  Individual Transfer: {single_time:.3f}s ({single_time/num_samples*1000:.2f}ms per sample)")
+    print(f"  Individual Transfer: {single_time:.4f}s ({single_time/num_samples*1000:.3f}ms per sample)")
 
     # Test 2: Batch Transfer
     batch = Batch.from_data_list(graphs)
-    start = time.time()
+    start = time.perf_counter()
     batch_gpu = batch.to(device)
-    batch_time = time.time() - start
+    batch_time = time.perf_counter() - start
 
-    print(f"  Batch Transfer: {batch_time:.3f}s for {num_samples} samples")
-    print(f"  → Speedup: {single_time/batch_time:.2f}x faster with batching")
+    print(f"  Batch Transfer: {batch_time:.4f}s for {num_samples} samples")
+    if batch_time > 0:
+        print(f"  → Speedup: {single_time/batch_time:.2f}x faster with batching")
+    else:
+        print("  → Speedup: N/A (Batch transfer was instantaneous)")
 
     if batch_time > 1.0:
         print(f"  ⚠ WARNING: Data transfer is slow! Consider:")
@@ -142,7 +145,7 @@ def benchmark_model_forward(device: torch.device, batch_sizes: list = [4, 8, 16,
 
         # Actual benchmark
         num_iterations = 50
-        start = time.time()
+        start = time.perf_counter()
 
         with torch.no_grad():
             for _ in range(num_iterations):
@@ -151,7 +154,7 @@ def benchmark_model_forward(device: torch.device, batch_sizes: list = [4, 8, 16,
         if device.type == 'cuda':
             torch.cuda.synchronize()
 
-        elapsed = time.time() - start
+        elapsed = time.perf_counter() - start
         time_per_batch = elapsed / num_iterations
         samples_per_sec = (bs * num_iterations) / elapsed
 
@@ -204,7 +207,7 @@ def benchmark_training_step(device: torch.device, batch_size: int = 8, num_steps
         if device.type == 'cuda':
             torch.cuda.synchronize()
 
-        start = time.time()
+        start = time.perf_counter()
 
         optimizer.zero_grad()
         value, policy_logits, tactic, strategic = model(batch)
@@ -215,7 +218,7 @@ def benchmark_training_step(device: torch.device, batch_size: int = 8, num_steps
         if device.type == 'cuda':
             torch.cuda.synchronize()
 
-        elapsed = time.time() - start
+        elapsed = time.perf_counter() - start
         times.append(elapsed)
 
         if step == 0:
