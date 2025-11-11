@@ -57,8 +57,8 @@ class RCNModel(nn.Module):
         nn.init.uniform_(self.policy_promo_head[0].weight, -0.01, 0.01)
         nn.init.zeros_(self.policy_promo_head[0].bias)
 
-        self.tactic_head = nn.Sequential(nn.Linear(out_channels, 1), nn.Sigmoid())
-        self.strategic_head = nn.Sequential(nn.Linear(out_channels, 1), nn.Sigmoid())
+        self.tactic_head = nn.Sequential(nn.Linear(out_channels, 1))
+        self.strategic_head = nn.Sequential(nn.Linear(out_channels, 1))
 
     def forward(self, data: Data) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...], torch.Tensor, torch.Tensor]:
         """

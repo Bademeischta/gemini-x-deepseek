@@ -186,8 +186,8 @@ def train() -> None:
 
     loss_value_fn = nn.MSELoss()
     loss_policy_fn = nn.CrossEntropyLoss(ignore_index=-1)
-    loss_tactic_fn = nn.BCELoss()
-    loss_strategic_fn = nn.BCELoss()
+    loss_tactic_fn = nn.BCEWithLogitsLoss()
+    loss_strategic_fn = nn.BCEWithLogitsLoss()
 
     # --- 3. Load Checkpoint ---
     start_epoch = 0
