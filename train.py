@@ -8,68 +8,84 @@ import torch
 import torch.nn as nn
 from torch.utils.data import random_split, Subset
 from torch_geometric.loader import DataLoader
+from torch.cuda.amp import autocast, GradScaler  # <-- NEU: Mixed Precision
 import os
 import json
 from typing import List
+from tqdm import tqdm  # <-- NEU: Progress Bars
 
 from scripts.model import RCNModel
 from scripts.dataset import ChessGraphDataset, DatasetWrapper
 from scripts.graph_utils import TOTAL_NODE_FEATURES, NUM_EDGE_FEATURES
 import config
 
-def save_checkpoint(epoch: int, model: nn.Module, optimizer: torch.optim.Optimizer, best_val_loss: float) -> None:
+def print_gpu_memory_stats(device: torch.device, prefix: str = ""):
+    """Zeigt GPU Memory Stats für Debugging."""
+    if device.type == 'cuda':
+        allocated = torch.cuda.memory_allocated(device) / 1024**3
+        reserved = torch.cuda.memory_reserved(device) / 1024**3
+        print(f"{prefix}GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+def save_checkpoint(epoch: int, model: nn.Module, optimizer: torch.optim.Optimizer,
+                   best_val_loss: float, scaler: GradScaler = None) -> None:
     """Saves the training checkpoint."""
-    torch.save({
+    checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'best_val_loss': best_val_loss,
-    }, config.TRAINING_CHECKPOINT_PATH)
-    print(f"Checkpoint for epoch {epoch+1} saved to {config.TRAINING_CHECKPOINT_PATH}")
+    }
+    if scaler is not None:
+        checkpoint['scaler_state_dict'] = scaler.state_dict()
+
+    torch.save(checkpoint, config.TRAINING_CHECKPOINT_PATH)
+    print(f"✓ Checkpoint for epoch {epoch+1} saved to {config.TRAINING_CHECKPOINT_PATH}")
 
 def train() -> None:
     """
-    Main training function with resume capability.
-
-    This function orchestrates the entire training process:
-    1. Sets up the device (GPU or CPU).
-    2. Initializes and prepares the datasets and data loaders.
-    3. Initializes the model, optimizer, and loss functions.
-    4. Loads a checkpoint if one exists to resume training.
-    5. Runs the training and validation loop for a configured number of epochs.
-    6. Saves a checkpoint at the end of each epoch.
-    7. Saves the model with the best validation loss separately.
-    8. Handles interruptions gracefully by saving a final checkpoint.
+    Main training function with resume capability, GPU optimization, and progress bars.
     """
     # --- 0. Setup ---
-    # Create directories based on the actual file paths, which might be patched in tests.
     if config.MODEL_SAVE_PATH:
         os.makedirs(os.path.dirname(config.MODEL_SAVE_PATH), exist_ok=True)
     if config.TRAINING_CHECKPOINT_PATH:
         os.makedirs(os.path.dirname(config.TRAINING_CHECKPOINT_PATH), exist_ok=True)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    print(f"\n{'='*60}")
+    print(f"  TRAINING CONFIGURATION")
+    print(f"{'='*60}")
+    print(f"Device: {device}")
+
+    if device.type == 'cuda':
+        props = torch.cuda.get_device_properties(device)
+        print(f"GPU: {props.name}")
+        print(f"GPU Memory: {props.total_memory / 1024**3:.2f} GB")
+        print(f"CUDA Version: {torch.version.cuda}")
+    else:
+        print("⚠ WARNING: Training on CPU - This will be VERY slow!")
+        print("   Consider enabling GPU in Colab or checking CUDA installation")
+
+    print(f"Batch Size: {config.BATCH_SIZE}")
+    print(f"Learning Rate: {config.LEARNING_RATE}")
+    print(f"Epochs: {config.NUM_EPOCHS}")
+    print(f"{'='*60}\n")
 
     # --- 1. Data Setup ---
     print("Setting up data loaders...")
     jsonl_paths: List[str] = [p for p in [config.DATA_PUZZLES_PATH, config.DATA_STRATEGIC_PATH] if p]
+
     if not all(os.path.exists(p) for p in jsonl_paths):
-        # Note: This dummy data logic might not be ideal with Drive persistence,
-        # but we keep it to prevent crashes if files are missing.
         print("One or more data files not found. Creating dummy files.")
         dummy_data = [
-            # 8 "puzzle" like positions (simple captures or checks)
             {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "value": 0.1, "policy_target": "e2e4", "tactic_flag": 0.0},
             {"fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", "value": 0.1, "policy_target": "g1f3", "tactic_flag": 0.0},
             {"fen": "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 1 3", "value": 0.1, "policy_target": "f1c4", "tactic_flag": 0.0},
-            {"fen": "rnbqkb1r/pppp1ppp/5n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 2 4", "value": 0.1, "policy_target": "f6e4", "tactic_flag": 1.0}, # A capture
-            {"fen": "rnbqk2r/pppp1ppp/5n2/4p3/1bB1P3/2N5/PPPP1PPP/R1BQK1NR w KQkq - 2 5", "value": 0.2, "policy_target": "e1g1", "tactic_flag": 0.0}, # Castling
+            {"fen": "rnbqkb1r/pppp1ppp/5n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 2 4", "value": 0.1, "policy_target": "f6e4", "tactic_flag": 1.0},
+            {"fen": "rnbqk2r/pppp1ppp/5n2/4p3/1bB1P3/2N5/PPPP1PPP/R1BQK1NR w KQkq - 2 5", "value": 0.2, "policy_target": "e1g1", "tactic_flag": 0.0},
             {"fen": "r1bqk2r/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 b kq - 0 6", "value": 0.1, "policy_target": "e8g8", "tactic_flag": 0.0},
             {"fen": "r1bq1rk1/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w - - 1 7", "value": 0.1, "policy_target": "a2a4", "tactic_flag": 0.0},
             {"fen": "r1bq1rk1/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 b - - 0 7", "value": 0.1, "policy_target": "d7d6", "tactic_flag": 0.0},
-
-            # 8 "strategic" positions
             {"fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", "value": 0.0, "policy_target": "c2c3", "strategic_flag": 1.0},
             {"fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR b KQkq - 0 2", "value": 0.0, "policy_target": "d7d5", "strategic_flag": 1.0},
             {"fen": "rnbqkbnr/pp2pppp/3p4/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR w KQkq - 0 3", "value": 0.0, "policy_target": "e4d5", "strategic_flag": 1.0},
@@ -89,10 +105,14 @@ def train() -> None:
                 for item in dummy_data[8:]:
                     f.write(json.dumps(item) + '\n')
 
-    with ChessGraphDataset(jsonl_paths=jsonl_paths) as dataset:
-        dataset_len = len(dataset)
+    # FIX: Dataset Context Manager über gesamten Training Loop
+    dataset = ChessGraphDataset(jsonl_paths=jsonl_paths)
+    dataset.__enter__()
 
-        # Enforce minimum batch size for BatchNorm
+    try:
+        dataset_len = len(dataset)
+        print(f"Total dataset size: {dataset_len} samples")
+
         MIN_BATCH_SIZE = 4
         if config.BATCH_SIZE < MIN_BATCH_SIZE:
             print(f"WARNING: batch_size {config.BATCH_SIZE} too small for BatchNorm. Setting to {MIN_BATCH_SIZE}")
@@ -103,7 +123,6 @@ def train() -> None:
         train_size = int(config.TRAIN_TEST_SPLIT * dataset_len)
         val_size = dataset_len - train_size
 
-        # Need at least batch_size samples in each set for BatchNorm
         if val_size < batch_size and config.TRAIN_TEST_SPLIT < 1.0:
             val_size = min(batch_size, dataset_len // 5)
             train_size = dataset_len - val_size
@@ -121,150 +140,295 @@ def train() -> None:
             train_indices, val_indices = train_subset.indices, val_subset.indices
 
         train_dataset = DatasetWrapper(dataset, train_indices)
-        val_dataset = DatasetWrapper(dataset, val_indices)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=True) if val_dataset else None
+        val_dataset = DatasetWrapper(dataset, val_indices) if val_indices else None
+
+        # OPTIMIZATION: num_workers und pin_memory für schnelleren GPU Transfer
+        num_workers = 2 if device.type == 'cuda' else 0
+        pin_memory = device.type == 'cuda'
+
+        print(f"DataLoader settings: num_workers={num_workers}, pin_memory={pin_memory}")
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=True,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=True if num_workers > 0 else False
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            drop_last=True,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=True if num_workers > 0 else False
+        ) if val_dataset else None
 
         # --- 2. Model Setup ---
+        print("\nInitializing model...")
         model = RCNModel(
             in_channels=TOTAL_NODE_FEATURES,
             out_channels=config.MODEL_OUT_CHANNELS,
             num_edge_features=NUM_EDGE_FEATURES
         ).to(device)
+
+        # Count parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
+
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-5)
-        loss_value_fn, loss_policy_fn = nn.MSELoss(), nn.CrossEntropyLoss(ignore_index=-1)
-        loss_tactic_fn, loss_strategic_fn = nn.BCELoss(), nn.BCELoss()
+
+        # OPTIMIZATION: Mixed Precision Training für ~2x Speedup
+        use_amp = device.type == 'cuda'
+        scaler = GradScaler() if use_amp else None
+        if use_amp:
+            print("✓ Using Mixed Precision Training (AMP)")
+
+        loss_value_fn = nn.MSELoss()
+        loss_policy_fn = nn.CrossEntropyLoss(ignore_index=-1)
+        loss_tactic_fn = nn.BCELoss()
+        loss_strategic_fn = nn.BCELoss()
 
         # --- 3. Load Checkpoint ---
         start_epoch = 0
         best_val_loss = float('inf')
         if os.path.exists(config.TRAINING_CHECKPOINT_PATH):
+            print(f"\nLoading checkpoint from {config.TRAINING_CHECKPOINT_PATH}")
             checkpoint = torch.load(config.TRAINING_CHECKPOINT_PATH, map_location=device)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['epoch'] + 1
             best_val_loss = checkpoint['best_val_loss']
-            print(f"Training wird ab Epoche {start_epoch + 1} fortgesetzt.")
+            if scaler and 'scaler_state_dict' in checkpoint:
+                scaler.load_state_dict(checkpoint['scaler_state_dict'])
+            print(f"✓ Resuming from epoch {start_epoch + 1}, best val loss: {best_val_loss:.4f}")
 
-        # --- 4. Training Loop ---
-        print("\nStarting training...")
+        if device.type == 'cuda':
+            print_gpu_memory_stats(device, "\nInitial ")
+
+        # --- 4. Training Loop mit Progress Bars ---
+        print("\n" + "="*60)
+        print("  STARTING TRAINING")
+        print("="*60 + "\n")
+
+        # PROGRESS BAR: Für gesamtes Training über alle Epochen
+        epoch_pbar = tqdm(
+            range(start_epoch, config.NUM_EPOCHS),
+            desc="Training Progress",
+            unit="epoch",
+            position=0,
+            leave=True,
+            ncols=100
+        )
+
         epoch = start_epoch
         try:
-            for epoch in range(start_epoch, config.NUM_EPOCHS):
+            for epoch in epoch_pbar:
                 model.train()
                 total_train_loss: float = 0.0
                 batch_count = 0
-                for batch in train_loader:
+
+                # PROGRESS BAR: Für Batches innerhalb einer Epoche
+                train_pbar = tqdm(
+                    train_loader,
+                    desc=f"Epoch {epoch+1}/{config.NUM_EPOCHS} [Train]",
+                    unit="batch",
+                    position=1,
+                    leave=False,
+                    ncols=100
+                )
+
+                for batch_idx, batch in enumerate(train_pbar):
                     # Skip batches with invalid data
                     if torch.isnan(batch.x).any() or torch.isinf(batch.x).any():
-                        print(f"WARNING: Skipping batch with NaN/Inf in input")
+                        train_pbar.set_postfix({"status": "SKIP:NaN"})
                         continue
 
                     batch = batch.to(device)
                     optimizer.zero_grad()
+
                     try:
-                        value, (policy_from, policy_to, policy_promo), tactic, strategic = model(batch)
+                        # OPTIMIZATION: Mixed Precision Forward Pass
+                        with autocast(enabled=use_amp):
+                            value, (policy_from, policy_to, policy_promo), tactic, strategic = model(batch)
 
-                        # Validate outputs before loss calculation
-                        if torch.isnan(value).any():
-                            raise ValueError("NaN in value output")
+                            # Validate outputs
+                            if torch.isnan(value).any():
+                                raise ValueError("NaN in value output")
 
-                        loss_v = loss_value_fn(value, batch.y.view(-1, 1))
+                            loss_v = loss_value_fn(value, batch.y.view(-1, 1))
 
-                        # --- Safe Policy Loss Calculation ---
-                        # Calculate loss only for valid targets to avoid NaN with CrossEntropyLoss
-                        from_targets = batch.policy_target_from
-                        to_targets = batch.policy_target_to
-                        promo_targets = batch.policy_target_promo
+                            # Safe Policy Loss Calculation
+                            from_targets = batch.policy_target_from
+                            to_targets = batch.policy_target_to
+                            promo_targets = batch.policy_target_promo
 
-                        loss_p_from = loss_policy_fn(policy_from, from_targets) if (from_targets != -1).any() else torch.tensor(0.0, device=device)
-                        loss_p_to = loss_policy_fn(policy_to, to_targets) if (to_targets != -1).any() else torch.tensor(0.0, device=device)
-                        loss_p_promo = loss_policy_fn(policy_promo, promo_targets) if (promo_targets != -1).any() else torch.tensor(0.0, device=device)
+                            loss_p_from = loss_policy_fn(policy_from, from_targets) if (from_targets != -1).any() else torch.tensor(0.0, device=device)
+                            loss_p_to = loss_policy_fn(policy_to, to_targets) if (to_targets != -1).any() else torch.tensor(0.0, device=device)
+                            loss_p_promo = loss_policy_fn(policy_promo, promo_targets) if (promo_targets != -1).any() else torch.tensor(0.0, device=device)
 
-                        loss_p = loss_p_from + loss_p_to + loss_p_promo
+                            loss_p = loss_p_from + loss_p_to + loss_p_promo
+                            loss_t = loss_tactic_fn(tactic, batch.tactic_flag.view(-1, 1))
+                            loss_s = loss_strategic_fn(strategic, batch.strategic_flag.view(-1, 1))
+                            loss = loss_v + loss_p + loss_t + loss_s
 
-                        loss_t = loss_tactic_fn(tactic, batch.tactic_flag.view(-1, 1))
-                        loss_s = loss_strategic_fn(strategic, batch.strategic_flag.view(-1, 1))
-                        loss = loss_v + loss_p + loss_t + loss_s
-
-                        # Check for NaN loss before backward
+                        # Check for NaN loss
                         if torch.isnan(loss) or torch.isinf(loss):
-                            print(f"WARNING: NaN/Inf loss detected (v:{loss_v:.4f}, p:{loss_p:.4f}, t:{loss_t:.4f}, s:{loss_s:.4f})")
+                            train_pbar.set_postfix({"loss": "NaN", "status": "SKIP"})
                             continue
 
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.GRADIENT_CLIP_NORM)
-                        optimizer.step()
+                        # OPTIMIZATION: Mixed Precision Backward Pass
+                        if use_amp:
+                            scaler.scale(loss).backward()
+                            scaler.unscale_(optimizer)
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.GRADIENT_CLIP_NORM)
+                            scaler.step(optimizer)
+                            scaler.update()
+                        else:
+                            loss.backward()
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.GRADIENT_CLIP_NORM)
+                            optimizer.step()
+
                         total_train_loss += loss.item()
                         batch_count += 1
+
+                        # UPDATE PROGRESS BAR
+                        postfix = {
+                            "loss": f"{loss.item():.4f}",
+                            "avg": f"{total_train_loss/batch_count:.4f}"
+                        }
+
+                        # GPU Memory jeden 10. Batch
+                        if device.type == 'cuda' and batch_idx % 10 == 0:
+                            gpu_mem = torch.cuda.memory_allocated(device) / 1024**3
+                            postfix["GPU"] = f"{gpu_mem:.1f}GB"
+
+                        train_pbar.set_postfix(postfix)
+
                     except Exception as e:
-                        print(f"ERROR in training batch: {e}")
+                        train_pbar.set_postfix({"error": str(e)[:20]})
+                        print(f"\n  ERROR in batch {batch_idx}: {e}")
                         continue
+
                 avg_train_loss = total_train_loss / max(1, batch_count)
 
+                # Validation Loop mit Progress Bar
                 total_val_loss: float = 0.0
                 val_batch_count = 0
+
                 if val_loader and len(val_loader) > 0:
                     model.eval()
+
+                    val_pbar = tqdm(
+                        val_loader,
+                        desc=f"Epoch {epoch+1}/{config.NUM_EPOCHS} [Val]",
+                        unit="batch",
+                        position=1,
+                        leave=False,
+                        ncols=100
+                    )
+
                     with torch.no_grad():
-                        for batch in val_loader:
-                            # Skip batches with invalid data
+                        for batch in val_pbar:
                             if torch.isnan(batch.x).any() or torch.isinf(batch.x).any():
-                                print(f"WARNING: Skipping validation batch with NaN/Inf in input")
+                                val_pbar.set_postfix({"status": "SKIP:NaN"})
                                 continue
 
                             batch = batch.to(device)
+
                             try:
-                                value, (policy_from, policy_to, policy_promo), tactic, strategic = model(batch)
+                                with autocast(enabled=use_amp):
+                                    value, (policy_from, policy_to, policy_promo), tactic, strategic = model(batch)
 
-                                # Validate outputs before loss calculation
-                                if torch.isnan(value).any():
-                                    raise ValueError("NaN in validation value output")
+                                    if torch.isnan(value).any():
+                                        raise ValueError("NaN in validation value")
 
-                                loss_v = loss_value_fn(value, batch.y.view(-1, 1))
+                                    loss_v = loss_value_fn(value, batch.y.view(-1, 1))
 
-                                # --- Safe Policy Loss Calculation ---
-                                from_targets = batch.policy_target_from
-                                to_targets = batch.policy_target_to
-                                promo_targets = batch.policy_target_promo
+                                    from_targets = batch.policy_target_from
+                                    to_targets = batch.policy_target_to
+                                    promo_targets = batch.policy_target_promo
 
-                                loss_p_from = loss_policy_fn(policy_from, from_targets) if (from_targets != -1).any() else torch.tensor(0.0, device=device)
-                                loss_p_to = loss_policy_fn(policy_to, to_targets) if (to_targets != -1).any() else torch.tensor(0.0, device=device)
-                                loss_p_promo = loss_policy_fn(policy_promo, promo_targets) if (promo_targets != -1).any() else torch.tensor(0.0, device=device)
+                                    loss_p_from = loss_policy_fn(policy_from, from_targets) if (from_targets != -1).any() else torch.tensor(0.0, device=device)
+                                    loss_p_to = loss_policy_fn(policy_to, to_targets) if (to_targets != -1).any() else torch.tensor(0.0, device=device)
+                                    loss_p_promo = loss_policy_fn(policy_promo, promo_targets) if (promo_targets != -1).any() else torch.tensor(0.0, device=device)
 
-                                loss_p = loss_p_from + loss_p_to + loss_p_promo
-                                loss_t = loss_tactic_fn(tactic, batch.tactic_flag.view(-1, 1))
-                                loss_s = loss_strategic_fn(strategic, batch.strategic_flag.view(-1, 1))
-                                loss = loss_v + loss_p + loss_t + loss_s
+                                    loss_p = loss_p_from + loss_p_to + loss_p_promo
+                                    loss_t = loss_tactic_fn(tactic, batch.tactic_flag.view(-1, 1))
+                                    loss_s = loss_strategic_fn(strategic, batch.strategic_flag.view(-1, 1))
+                                    loss = loss_v + loss_p + loss_t + loss_s
 
                                 if torch.isnan(loss) or torch.isinf(loss):
-                                    print(f"WARNING: NaN/Inf loss in validation")
+                                    val_pbar.set_postfix({"status": "NaN"})
                                     continue
 
                                 total_val_loss += loss.item()
                                 val_batch_count += 1
-                            except Exception as e:
-                                print(f"ERROR in validation batch: {e}")
-                                continue
-                avg_val_loss = total_val_loss / max(1, val_batch_count)
-                print(f"Epoch {epoch+1}/{config.NUM_EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
 
+                                val_pbar.set_postfix({
+                                    "loss": f"{loss.item():.4f}",
+                                    "avg": f"{total_val_loss/val_batch_count:.4f}"
+                                })
+
+                            except Exception as e:
+                                val_pbar.set_postfix({"error": str(e)[:20]})
+                                continue
+
+                avg_val_loss = total_val_loss / max(1, val_batch_count) if val_batch_count > 0 else float('inf')
+
+                # UPDATE EPOCH PROGRESS BAR
+                epoch_pbar.set_postfix({
+                    "train": f"{avg_train_loss:.4f}",
+                    "val": f"{avg_val_loss:.4f}" if avg_val_loss != float('inf') else "N/A"
+                })
+
+                # Console Output (bleibt sichtbar)
+                print(f"\n{'─'*60}")
+                print(f"Epoch {epoch+1}/{config.NUM_EPOCHS} Complete")
+                print(f"  Train Loss: {avg_train_loss:.4f}")
+                print(f"  Val Loss:   {avg_val_loss:.4f}" if avg_val_loss != float('inf') else "  Val Loss:   N/A")
+
+                if device.type == 'cuda':
+                    print_gpu_memory_stats(device, "  ")
+
+                # Save best model
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
                     torch.save(model.state_dict(), config.MODEL_SAVE_PATH)
-                    print(f"New best model saved to {config.MODEL_SAVE_PATH}")
+                    print(f"  ✓ New best model saved!")
 
-                # Save a checkpoint at the end of every epoch
-                save_checkpoint(epoch, model, optimizer, best_val_loss)
+                # Save checkpoint
+                save_checkpoint(epoch, model, optimizer, best_val_loss, scaler)
+                print(f"{'─'*60}\n")
 
         except KeyboardInterrupt:
-            print("\nTraining unterbrochen. Speichere letzten Checkpoint...")
-            save_checkpoint(epoch, model, optimizer, best_val_loss)
+            print("\n\n⚠ Training interrupted by user!")
+            save_checkpoint(epoch, model, optimizer, best_val_loss, scaler)
+            print("✓ Checkpoint saved")
         except Exception as e:
-            print(f"\nFehler aufgetreten: {e}. Speichere Notfall-Checkpoint...")
-            save_checkpoint(epoch, model, optimizer, best_val_loss)
+            print(f"\n\n❌ Training failed with error: {e}")
+            import traceback
+            traceback.print_exc()
+            save_checkpoint(epoch, model, optimizer, best_val_loss, scaler)
+            print("✓ Emergency checkpoint saved")
+        finally:
+            epoch_pbar.close()
 
-        print("\nTraining finished.")
+        print("\n" + "="*60)
+        print("  TRAINING COMPLETE")
+        print("="*60)
+        print(f"Best Validation Loss: {best_val_loss:.4f}")
+        print(f"Model saved to: {config.MODEL_SAVE_PATH}")
+        print("="*60 + "\n")
+
+    finally:
+        # Cleanup: Dataset schließen
+        dataset.__exit__(None, None, None)
+        print("✓ Dataset resources cleaned up")
 
 if __name__ == '__main__':
     train()

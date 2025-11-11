@@ -173,8 +173,13 @@ class DatasetWrapper(TorchDataset):
         original_idx = self.indices[idx]
         return self.base_dataset[original_idx]
 
-    def __enter__(self) -> 'DatasetWrapper': return self
-    def __exit__(self, *args: Any) -> None: pass
+    # FIX: Context Manager Propagierung
+    def __enter__(self) -> 'DatasetWrapper':
+        self.base_dataset.__enter__()  # <-- WICHTIG!
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.base_dataset.__exit__(*args)  # <-- WICHTIG!
 
 if __name__ == '__main__':
     # This block is for self-contained validation of the script's logic.
