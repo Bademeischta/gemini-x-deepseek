@@ -45,7 +45,7 @@ class TestEndToEnd(unittest.TestCase):
     @patch('config.TRAINING_CHECKPOINT_PATH', "models/e2e_test_checkpoint.pth")
     @patch('config.NUM_EPOCHS', 1)
     @patch('config.BATCH_SIZE', 4) # Use a valid batch size >= MIN_BATCH_SIZE
-    @patch('config.TRAIN_TEST_SPLIT', 1.0) # Use all data for training to avoid val_loss issues with BatchNorm
+    @patch('config.TRAIN_TEST_SPLIT', 0.5) # Use a split to ensure val_loss is calculated
     def test_short_training_run(self):
         """
         Tests that the training process can run for one epoch without errors.
