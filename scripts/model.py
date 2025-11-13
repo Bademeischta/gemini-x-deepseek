@@ -45,9 +45,9 @@ class RCNModel(nn.Module):
             nn.Linear(128, 1), nn.Tanh()
         )
         # Policy heads with small initialization to prevent extreme logits
-        self.policy_from_head = nn.Sequential(nn.Linear(out_channels, MAX_FROM_SQUARES))
-        self.policy_to_head = nn.Sequential(nn.Linear(out_channels, MAX_TO_SQUARES))
-        self.policy_promo_head = nn.Sequential(nn.Linear(out_channels, MAX_PROMOTION_PIECES))
+        self.policy_from_head = nn.Sequential(nn.Linear(out_channels, MAX_FROM_SQUARES), nn.Tanh())
+        self.policy_to_head = nn.Sequential(nn.Linear(out_channels, MAX_TO_SQUARES), nn.Tanh())
+        self.policy_promo_head = nn.Sequential(nn.Linear(out_channels, MAX_PROMOTION_PIECES), nn.Tanh())
 
         # Initialize policy head weights with small values
         nn.init.uniform_(self.policy_from_head[0].weight, -0.01, 0.01)
@@ -124,23 +124,20 @@ class RCNModel(nn.Module):
 
         value = self.value_head(graph_embedding)
 
-        policy_from_logits = self.policy_from_head(graph_embedding)
-        policy_to_logits = self.policy_to_head(graph_embedding)
-        policy_promo_logits = self.policy_promo_head(graph_embedding)
+        # --- FIX: Scale policy head outputs to prevent extreme values ---
+        # Tanh squashes outputs to [-1, 1], we scale it to a reasonable logit range, e.g., [-15, 15]
+        logit_scale = 15.0
+        policy_from_logits = logit_scale * self.policy_from_head(graph_embedding)
+        policy_to_logits = logit_scale * self.policy_to_head(graph_embedding)
+        policy_promo_logits = logit_scale * self.policy_promo_head(graph_embedding)
 
-        # Validate policy outputs
+        # Validate policy outputs (reduced check, as Tanh prevents inf)
         if torch.isnan(policy_from_logits).any():
             raise ValueError("NaN in policy_from_logits!")
         if torch.isnan(policy_to_logits).any():
             raise ValueError("NaN in policy_to_logits!")
         if torch.isnan(policy_promo_logits).any():
             raise ValueError("NaN in policy_promo_logits!")
-
-        # Check for extreme values that could cause NaN in softmax
-        if torch.isinf(policy_from_logits).any() or policy_from_logits.abs().max() > 100:
-            raise ValueError(f"Extreme values in policy_from: max={policy_from_logits.abs().max()}")
-        if torch.isinf(policy_to_logits).any() or policy_to_logits.abs().max() > 100:
-            raise ValueError(f"Extreme values in policy_to: max={policy_to_logits.abs().max()}")
 
         tactic_flag = self.tactic_head(graph_embedding)
         strategic_flag = self.strategic_head(graph_embedding)
