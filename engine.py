@@ -229,6 +229,15 @@ class Searcher:
                 elapsed = int((time.time() - start_time) * 1000)
                 cp_score = int(score * 100) if board.turn == chess.WHITE else int(-score * 100)
                 send_command(f"info depth {d} score cp {cp_score} nodes {self.nodes_searched} time {elapsed} pv {' '.join([m.uci() for m in pv if m])}")
+
+                # "Easy Move" logic: Stop early in obvious positions during time-based searches.
+                if time_limit is not None:
+                    is_easy_move_depth = d > config.EASY_MOVE_MIN_DEPTH
+                    is_decisive_score = abs(cp_score) > config.EASY_MOVE_SCORE_THRESHOLD
+                    is_not_mate_search = abs(cp_score) < config.MATE_SCORE_LOWER_BOUND
+
+                    if is_easy_move_depth and is_decisive_score and is_not_mate_search:
+                        break  # Stop searching, the position is decided.
             except TimeoutError:
                 break
             except Exception as e:
@@ -321,6 +330,9 @@ def handle_go(parts: List[str], board: chess.Board, searcher: Searcher, stdout: 
     """Parses the 'go' command and initiates a search."""
     params = {parts[i]: int(parts[i+1]) for i in range(len(parts)-1) if parts[i] in ["wtime", "btime", "winc", "binc", "movestogo", "depth"]}
     time_limit = None
+    depth = config.SEARCH_DEPTH # Fallback depth
+
+    # Prioritize time over depth, as per UCI standard for GUIs.
     if "wtime" in params:
         time_limit_ms = calculate_search_time(
             params.get("wtime", 0), params.get("btime", 0),
@@ -328,8 +340,9 @@ def handle_go(parts: List[str], board: chess.Board, searcher: Searcher, stdout: 
             params.get("movestogo"), board.turn
         )
         time_limit = time_limit_ms / 1000.0
-
-    depth = params.get("depth", config.SEARCH_DEPTH)
+        depth = config.INFINITE_DEPTH  # Use "infinite" depth for time-based search
+    elif "depth" in params:
+        depth = params["depth"]
 
     # Temporarily redirect stdout for the search's send_command calls
     original_stdout = sys.stdout
