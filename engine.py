@@ -3,6 +3,7 @@ This module implements the main UCI (Universal Chess Interface) engine logic,
 including the search algorithm and communication with a GUI.
 """
 import chess
+import chess.polyglot
 import sys
 import logging
 import os
@@ -121,7 +122,7 @@ class Searcher:
 
     def _get_ordered_moves(self, board: chess.Board, depth: int, policy_logits: Tuple[torch.Tensor, ...]) -> List[chess.Move]:
         """Sorts legal moves based on a heuristic for efficient search."""
-        z_hash = chess.zobrist_hash(board)
+        z_hash = chess.polyglot.zobrist_hash(board)
         if z_hash in self.move_cache:
             return self.move_cache[z_hash]
 
@@ -156,7 +157,7 @@ class Searcher:
     def _negamax(self, board: chess.Board, depth: int, alpha: float, beta: float, start_time: float, time_limit: Optional[float]) -> Tuple[float, Optional[chess.Move]]:
         """The core negamax search function."""
         alpha_orig = alpha
-        z_hash = chess.zobrist_hash(board)
+        z_hash = chess.polyglot.zobrist_hash(board)
 
         if z_hash in self.transposition_table and self.transposition_table[z_hash]['depth'] >= depth:
             entry = self.transposition_table[z_hash]
@@ -227,8 +228,8 @@ class Searcher:
                 temp_board = board.copy()
                 if best_move:
                     temp_board.push(best_move)
-                    while chess.zobrist_hash(temp_board) in self.transposition_table:
-                        entry = self.transposition_table.get(chess.zobrist_hash(temp_board))
+                    while chess.polyglot.zobrist_hash(temp_board) in self.transposition_table:
+                        entry = self.transposition_table.get(chess.polyglot.zobrist_hash(temp_board))
                         if not entry or not entry.get('move'):
                             break
                         move = entry['move']
