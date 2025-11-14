@@ -201,7 +201,14 @@ class Searcher:
         return best_value, best_move
 
     def search(self, board: chess.Board, depth: int, time_limit: Optional[float]) -> Optional[chess.Move]:
-        """Performs iterative deepening search."""
+        """
+        Performs iterative deepening search with early termination for obvious moves.
+
+        Args:
+            board: Current position
+            depth: Maximum depth to search (99 = infinite if time-limited)
+            time_limit: Time limit in seconds (None = no limit)
+        """
         self.transposition_table.clear()
         self.killer_moves.clear()
         self.move_cache.clear()
@@ -212,32 +219,46 @@ class Searcher:
         for d in range(1, depth + 1):
             try:
                 score, best_move = self._negamax(board, d, -float('inf'), float('inf'), start_time, time_limit)
-                if best_move: best_move_overall = best_move
+                if best_move:
+                    best_move_overall = best_move
 
+                # Build PV (Principal Variation)
                 pv = [best_move] if best_move else []
                 temp_board = board.copy()
                 if best_move:
                     temp_board.push(best_move)
                     while chess.zobrist_hash(temp_board) in self.transposition_table:
                         entry = self.transposition_table.get(chess.zobrist_hash(temp_board))
-                        if not entry or not entry.get('move'): break
+                        if not entry or not entry.get('move'):
+                            break
                         move = entry['move']
                         pv.append(move)
                         temp_board.push(move)
-                        if len(pv) >= d: break
+                        if len(pv) >= d:
+                            break
 
+                # Send info to GUI
                 elapsed = int((time.time() - start_time) * 1000)
                 cp_score = int(score * 100) if board.turn == chess.WHITE else int(-score * 100)
-                send_command(f"info depth {d} score cp {cp_score} nodes {self.nodes_searched} time {elapsed} pv {' '.join([m.uci() for m in pv if m])}")
+                pv_str = ' '.join([m.uci() for m in pv if m])
+                send_command(f"info depth {d} score cp {cp_score} nodes {self.nodes_searched} time {elapsed} pv {pv_str}")
 
-                # "Easy Move" logic: Stop early in obvious positions during time-based searches.
+                # ⭐ EASY MOVE DETECTION
                 if time_limit is not None:
-                    is_easy_move_depth = d > config.EASY_MOVE_MIN_DEPTH
-                    is_decisive_score = abs(cp_score) > config.EASY_MOVE_SCORE_THRESHOLD
-                    is_not_mate_search = abs(cp_score) < config.MATE_SCORE_LOWER_BOUND
+                    elapsed_sec = time.time() - start_time
 
-                    if is_easy_move_depth and is_decisive_score and is_not_mate_search:
-                        break  # Stop searching, the position is decided.
+                    # Detect obvious positions
+                    is_obvious = (
+                        d >= config.EASY_MOVE_MIN_DEPTH and  # Minimum depth for reliable evaluation
+                        abs(cp_score) > config.EASY_MOVE_SCORE_THRESHOLD and  # >10 pawns advantage
+                        abs(cp_score) < config.MATE_SCORE_LOWER_BOUND and  # Not a mate score
+                        elapsed_sec > (time_limit * 0.15)  # Used at least 15% of time
+                    )
+
+                    if is_obvious:
+                        send_command(f"info string Easy move: depth {d}, eval {cp_score/100:.2f}")
+                        break
+
             except TimeoutError:
                 break
             except Exception as e:
@@ -327,28 +348,51 @@ def calculate_search_time(wtime: int, btime: int, winc: int, binc: int, movestog
     return min(final_time_ms, time_left_ms)
 
 def handle_go(parts: List[str], board: chess.Board, searcher: Searcher, stdout: IO[str] = sys.stdout) -> None:
-    """Parses the 'go' command and initiates a search."""
-    params = {parts[i]: int(parts[i+1]) for i in range(len(parts)-1) if parts[i] in ["wtime", "btime", "winc", "binc", "movestogo", "depth"]}
-    time_limit = None
-    depth = config.SEARCH_DEPTH # Fallback depth
+    """
+    Parses the 'go' command and initiates a search.
+    PRIORITY: Time-based search > Depth-based search > Default depth
+    """
+    # Parse UCI go parameters
+    params = {}
+    i = 1  # Start after 'go'
+    while i < len(parts):
+        key = parts[i]
+        if key in ["wtime", "btime", "winc", "binc", "movestogo", "depth"] and i + 1 < len(parts):
+            try:
+                params[key] = int(parts[i + 1])
+                i += 2
+            except ValueError:
+                i += 1
+        else:
+            i += 1
 
-    # Prioritize time over depth, as per UCI standard for GUIs.
-    if "wtime" in params:
+    time_limit = None
+    depth = config.SEARCH_DEPTH  # Default fallback
+
+    # ⭐ CRITICAL FIX: Time ALWAYS has priority over depth
+    if "wtime" in params or "btime" in params:
+        # Time-based search
         time_limit_ms = calculate_search_time(
-            params.get("wtime", 0), params.get("btime", 0),
-            params.get("winc", 0), params.get("binc", 0),
-            params.get("movestogo"), board.turn
+            params.get("wtime", 0),
+            params.get("btime", 0),
+            params.get("winc", 0),
+            params.get("binc", 0),
+            params.get("movestogo"),
+            board.turn
         )
         time_limit = time_limit_ms / 1000.0
-        depth = config.INFINITE_DEPTH  # Use "infinite" depth for time-based search
-    elif "depth" in params:
-        depth = params["depth"]
+        depth = config.INFINITE_DEPTH  # Search "infinitely" until timeout
 
-    # Temporarily redirect stdout for the search's send_command calls
+    elif "depth" in params:
+        # Depth-based search (only if NO time specified)
+        depth = params["depth"]
+        time_limit = None
+
+    # Perform search
     original_stdout = sys.stdout
     sys.stdout = stdout
     best_move = searcher.search(board, depth, time_limit)
-    sys.stdout = original_stdout # Restore stdout
+    sys.stdout = original_stdout
 
     send_command(f"bestmove {best_move.uci() if best_move else '0000'}", stdout)
 
