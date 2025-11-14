@@ -5,7 +5,7 @@ TRANSPOSITION_TABLE_SIZE = 1_000_000 # Max entries
 INFINITE_DEPTH = 99
 
 # --- Dynamic Time Management ("Easy Move") ---
-EASY_MOVE_MIN_DEPTH = 5
+EASY_MOVE_MIN_DEPTH = 6
 EASY_MOVE_SCORE_THRESHOLD = 1000  # in centipawns
 MATE_SCORE_LOWER_BOUND = 29000   # Scores above this are mate scores
 
