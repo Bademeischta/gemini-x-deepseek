@@ -2,12 +2,15 @@
 SEARCH_DEPTH = 4
 QUIESCENCE_SEARCH_DEPTH = 4
 TRANSPOSITION_TABLE_SIZE = 1_000_000 # Max entries
+
+# --- UCI Search Behavior ---
+# Maximale Tiefe für zeitbasierte Suche (praktisch "unendlich")
 INFINITE_DEPTH = 99
 
-# --- Dynamic Time Management ("Easy Move") ---
-EASY_MOVE_MIN_DEPTH = 6
-EASY_MOVE_SCORE_THRESHOLD = 1000  # in centipawns
-MATE_SCORE_LOWER_BOUND = 29000   # Scores above this are mate scores
+# Schwellenwerte für dynamisches Zeitmanagement ("Easy Move")
+EASY_MOVE_MIN_DEPTH = 5 # Muss min. 5 Halbzüge tief sein
+EASY_MOVE_SCORE_THRESHOLD = 1000 # (+10 Bauern, ab hier nicht weiter rechnen)
+MATE_SCORE_LOWER_BOUND = 29000 # (Matt-Scores ignorieren, da diese Zeit brauchen)
 
 # --- Model Configuration ---
 NODE_EMBEDDING_DIM = 64

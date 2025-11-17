@@ -215,6 +215,7 @@ class Searcher:
         self.move_cache.clear()
         self.nodes_searched = 0
         start_time = time.time()
+        score = 0
         best_move_overall = None
 
         for d in range(1, depth + 1):
@@ -244,21 +245,16 @@ class Searcher:
                 pv_str = ' '.join([m.uci() for m in pv if m])
                 send_command(f"info depth {d} score cp {cp_score} nodes {self.nodes_searched} time {elapsed} pv {pv_str}")
 
-                # ⭐ EASY MOVE DETECTION
-                if time_limit is not None:
-                    elapsed_sec = time.time() - start_time
+                # --- NEU: Dynamisches Zeitmanagement ("Easy Move") ---
+                if (time_limit is not None and
+                    d > config.EASY_MOVE_MIN_DEPTH and
+                    abs(cp_score) < config.MATE_SCORE_LOWER_BOUND):
 
-                    # Detect obvious positions
-                    is_obvious = (
-                        d >= config.EASY_MOVE_MIN_DEPTH and  # Minimum depth for reliable evaluation
-                        abs(cp_score) > config.EASY_MOVE_SCORE_THRESHOLD and  # >10 pawns advantage
-                        abs(cp_score) < config.MATE_SCORE_LOWER_BOUND and  # Not a mate score
-                        elapsed_sec > (time_limit * 0.15)  # Used at least 15% of time
-                    )
-
-                    if is_obvious:
-                        send_command(f"info string Easy move: depth {d}, eval {cp_score/100:.2f}")
+                    # Wenn wir haushoch gewinnen/verlieren, Suche abbrechen
+                    if abs(cp_score) > config.EASY_MOVE_SCORE_THRESHOLD:
+                        send_command(f"info string Easy move detected at depth {d}. Stopping early.")
                         break
+                # --- Ende Neuer Block ---
 
             except TimeoutError:
                 break
@@ -349,47 +345,30 @@ def calculate_search_time(wtime: int, btime: int, winc: int, binc: int, movestog
     return min(final_time_ms, time_left_ms)
 
 def handle_go(parts: List[str], board: chess.Board, searcher: Searcher, stdout: IO[str] = sys.stdout) -> None:
-    """
-    Parses the 'go' command and initiates a search.
-    PRIORITY: Time-based search > Depth-based search > Default depth
-    """
-    # Parse UCI go parameters
-    params = {}
-    i = 1  # Start after 'go'
-    while i < len(parts):
-        key = parts[i]
-        if key in ["wtime", "btime", "winc", "binc", "movestogo", "depth"] and i + 1 < len(parts):
-            try:
-                params[key] = int(parts[i + 1])
-                i += 2
-            except ValueError:
-                i += 1
-        else:
-            i += 1
-
+    """Parses the 'go' command and initiates a search."""
+    params = {parts[i]: int(parts[i+1]) for i in range(len(parts)-1) if parts[i] in ["wtime", "btime", "winc", "binc", "movestogo", "depth"]}
     time_limit = None
-    depth = config.SEARCH_DEPTH  # Default fallback
 
-    # ⭐ CRITICAL FIX: Time ALWAYS has priority over depth
-    if "wtime" in params or "btime" in params:
-        # Time-based search
+    # Standard-Tiefe als Fallback
+    depth = config.SEARCH_DEPTH
+
+    if "wtime" in params:
+        # --- MODUS 1: ZEITKONTROLLE (Arena gibt Zeit) ---
         time_limit_ms = calculate_search_time(
-            params.get("wtime", 0),
-            params.get("btime", 0),
-            params.get("winc", 0),
-            params.get("binc", 0),
-            params.get("movestogo"),
-            board.turn
+            params.get("wtime", 0), params.get("btime", 0),
+            params.get("winc", 0), params.get("binc", 0),
+            params.get("movestogo"), board.turn
         )
         time_limit = time_limit_ms / 1000.0
-        depth = config.INFINITE_DEPTH  # Search "infinitely" until timeout
+
+        # WICHTIG: Tiefe auf unendlich setzen, damit die ZEIT entscheidet
+        depth = config.INFINITE_DEPTH
 
     elif "depth" in params:
-        # Depth-based search (only if NO time specified)
-        depth = params["depth"]
-        time_limit = None
+        # --- MODUS 2: FESTE TIEFE (Arena gibt NUR Tiefe) ---
+        depth = params.get("depth")
 
-    # Perform search
+    # Temporarily redirect stdout for the search's send_command calls
     original_stdout = sys.stdout
     sys.stdout = stdout
     best_move = searcher.search(board, depth, time_limit)
