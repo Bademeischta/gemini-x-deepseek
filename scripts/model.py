@@ -5,11 +5,10 @@ from torch_geometric.data import Data
 from typing import Tuple
 
 import config
-# Importieren Sie die Anzahl der Basisknoten-Merkmale (12 Typen)
-from scripts.graph_utils import PIECE_TO_INT, TOTAL_NODE_FEATURES
+# No longer importing from graph_utils, constants are self-contained.
 
-# Die Anzahl der Basisknoten-Typen (Pawn..King * 2)
-NUM_PIECE_TYPES = len(PIECE_TO_INT) # Sollte 12 sein
+# 6 piece types x 2 colors
+NUM_PIECE_TYPES = 12
 
 class RCNModel(nn.Module):
 

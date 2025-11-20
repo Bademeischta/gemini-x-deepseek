@@ -13,11 +13,9 @@ import os
 import json
 from typing import List
 from tqdm import tqdm  # <-- NEU: Progress Bars
-import chess
 
 from scripts.model import RCNModel
 from scripts.dataset import ChessGraphDataset, DatasetWrapper
-from scripts.uci_index import uci_to_index_4096
 import config
 
 def print_gpu_memory_stats(device: torch.device, prefix: str = ""):
@@ -41,14 +39,6 @@ def save_checkpoint(epoch: int, model: nn.Module, optimizer: torch.optim.Optimiz
 
     torch.save(checkpoint, config.TRAINING_CHECKPOINT_PATH)
     print(f"✓ Checkpoint for epoch {epoch+1} saved to {config.TRAINING_CHECKPOINT_PATH}")
-
-def create_legal_move_mask(board: chess.Board) -> torch.Tensor:
-    """Creates a boolean mask for legal moves (4096 indices)."""
-    mask = torch.zeros(4096, dtype=torch.bool)
-    for move in board.legal_moves:
-        idx = uci_to_index_4096(move.uci())
-        mask[idx] = True
-    return mask
 
 def train() -> None:
     """
@@ -91,13 +81,13 @@ def train() -> None:
             {"fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", "value": 0.1, "policy_target": "g1f3", "tactic_flag": 0.0},
             {"fen": "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 1 3", "value": 0.1, "policy_target": "f1c4", "tactic_flag": 0.0},
             {"fen": "rnbqkb1r/pppp1ppp/5n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 2 4", "value": 0.1, "policy_target": "f6e4", "tactic_flag": 1.0},
-            {"fen": "rnbqk2r/pppp1ppp/5n2/4p3/1bB1P3/2N5/PPPP1PPP/R1BQK1NR w KQkq - 2 5", "value": 0.2, "policy_target": "d2d3", "tactic_flag": 0.0},
+            {"fen": "rnbqk2r/pppp1ppp/5n2/4p3/1bB1P3/2N5/PPPP1PPP/R1BQK1NR w KQkq - 2 5", "value": 0.2, "policy_target": "e1g1", "tactic_flag": 0.0},
             {"fen": "r1bqk2r/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 b kq - 0 6", "value": 0.1, "policy_target": "e8g8", "tactic_flag": 0.0},
             {"fen": "r1bq1rk1/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w - - 1 7", "value": 0.1, "policy_target": "a2a4", "tactic_flag": 0.0},
             {"fen": "r1bq1rk1/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 b - - 0 7", "value": 0.1, "policy_target": "d7d6", "tactic_flag": 0.0},
             {"fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", "value": 0.0, "policy_target": "c2c3", "strategic_flag": 1.0},
             {"fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR b KQkq - 0 2", "value": 0.0, "policy_target": "d7d5", "strategic_flag": 1.0},
-            {"fen": "rnbqkbnr/pp2pppp/3p4/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR w KQkq - 0 3", "value": 0.0, "policy_target": "d2d4", "strategic_flag": 1.0},
+            {"fen": "rnbqkbnr/pp2pppp/3p4/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR w KQkq - 0 3", "value": 0.0, "policy_target": "e4d5", "strategic_flag": 1.0},
             {"fen": "rnbqkbnr/pp2pppp/3p4/8/3pP3/2P5/PP3PPP/RNBQKBNR w KQkq - 0 4", "value": 0.1, "policy_target": "c3d4", "strategic_flag": 1.0},
             {"fen": "rnbqkbnr/pp2pppp/3p4/8/3PP3/8/PP3PPP/RNBQKBNR b KQkq - 0 4", "value": 0.1, "policy_target": "g8f6", "strategic_flag": 1.0},
             {"fen": "rnbqkb1r/pp2pppp/3p1n2/8/3PP3/8/PP3PPP/RNBQKBNR w KQkq - 1 5", "value": 0.1, "policy_target": "b1c3", "strategic_flag": 1.0},
@@ -261,8 +251,8 @@ def train() -> None:
                     with autocast(enabled=use_amp):
                         value, policy_logits, tactic, strategic = model(batch)
 
-                        # Create legal move mask
-                        legal_move_masks = torch.stack([create_legal_move_mask(chess.Board(data.fen)) for data in batch.to_data_list()]).to(device)
+                        # Use pre-computed legal move mask and reshape it
+                        legal_move_masks = batch.legal_moves_mask.view(-1, 4096).to(device)
 
                         # Apply mask to logits
                         policy_logits[~legal_move_masks] = -1e9
@@ -349,8 +339,8 @@ def train() -> None:
                             with autocast(enabled=use_amp):
                                 value, policy_logits, tactic, strategic = model(batch)
 
-                                # Create legal move mask
-                                legal_move_masks = torch.stack([create_legal_move_mask(chess.Board(data.fen)) for data in batch.to_data_list()]).to(device)
+                                # Use pre-computed legal move mask and reshape it
+                                legal_move_masks = batch.legal_moves_mask.view(-1, 4096).to(device)
 
                                 # Apply mask to logits
                                 policy_logits[~legal_move_masks] = -1e9
