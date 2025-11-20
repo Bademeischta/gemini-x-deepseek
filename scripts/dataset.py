@@ -107,6 +107,14 @@ class ChessGraphDataset(PyGDataset):
         graph_data.strategic_flag = torch.tensor([data_record.get('strategic_flag', 0.0)], dtype=torch.float32)
         graph_data.fen = data_record['fen']
 
+        # Pre-compute legal move mask
+        board = chess.Board(data_record['fen'])
+        legal_moves_mask = torch.zeros(4096, dtype=torch.bool)
+        for move in board.legal_moves:
+            idx = uci_to_index_4096(move.uci())
+            legal_moves_mask[idx] = True
+        graph_data.legal_moves_mask = legal_moves_mask
+
         return graph_data
 
 class DatasetWrapper(TorchDataset):
