@@ -13,10 +13,11 @@ import os
 import json
 from typing import List
 from tqdm import tqdm  # <-- NEU: Progress Bars
+import chess
 
 from scripts.model import RCNModel
 from scripts.dataset import ChessGraphDataset, DatasetWrapper
-from scripts.graph_utils import TOTAL_NODE_FEATURES, NUM_EDGE_FEATURES
+from scripts.uci_index import uci_to_index_4096
 import config
 
 def print_gpu_memory_stats(device: torch.device, prefix: str = ""):
@@ -40,6 +41,14 @@ def save_checkpoint(epoch: int, model: nn.Module, optimizer: torch.optim.Optimiz
 
     torch.save(checkpoint, config.TRAINING_CHECKPOINT_PATH)
     print(f"✓ Checkpoint for epoch {epoch+1} saved to {config.TRAINING_CHECKPOINT_PATH}")
+
+def create_legal_move_mask(board: chess.Board) -> torch.Tensor:
+    """Creates a boolean mask for legal moves (4096 indices)."""
+    mask = torch.zeros(4096, dtype=torch.bool)
+    for move in board.legal_moves:
+        idx = uci_to_index_4096(move.uci())
+        mask[idx] = True
+    return mask
 
 def train() -> None:
     """
@@ -82,13 +91,13 @@ def train() -> None:
             {"fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", "value": 0.1, "policy_target": "g1f3", "tactic_flag": 0.0},
             {"fen": "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 1 3", "value": 0.1, "policy_target": "f1c4", "tactic_flag": 0.0},
             {"fen": "rnbqkb1r/pppp1ppp/5n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 2 4", "value": 0.1, "policy_target": "f6e4", "tactic_flag": 1.0},
-            {"fen": "rnbqk2r/pppp1ppp/5n2/4p3/1bB1P3/2N5/PPPP1PPP/R1BQK1NR w KQkq - 2 5", "value": 0.2, "policy_target": "e1g1", "tactic_flag": 0.0},
+            {"fen": "rnbqk2r/pppp1ppp/5n2/4p3/1bB1P3/2N5/PPPP1PPP/R1BQK1NR w KQkq - 2 5", "value": 0.2, "policy_target": "d2d3", "tactic_flag": 0.0},
             {"fen": "r1bqk2r/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 b kq - 0 6", "value": 0.1, "policy_target": "e8g8", "tactic_flag": 0.0},
             {"fen": "r1bq1rk1/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w - - 1 7", "value": 0.1, "policy_target": "a2a4", "tactic_flag": 0.0},
             {"fen": "r1bq1rk1/ppppbppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 b - - 0 7", "value": 0.1, "policy_target": "d7d6", "tactic_flag": 0.0},
             {"fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", "value": 0.0, "policy_target": "c2c3", "strategic_flag": 1.0},
             {"fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR b KQkq - 0 2", "value": 0.0, "policy_target": "d7d5", "strategic_flag": 1.0},
-            {"fen": "rnbqkbnr/pp2pppp/3p4/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR w KQkq - 0 3", "value": 0.0, "policy_target": "e4d5", "strategic_flag": 1.0},
+            {"fen": "rnbqkbnr/pp2pppp/3p4/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR w KQkq - 0 3", "value": 0.0, "policy_target": "d2d4", "strategic_flag": 1.0},
             {"fen": "rnbqkbnr/pp2pppp/3p4/8/3pP3/2P5/PP3PPP/RNBQKBNR w KQkq - 0 4", "value": 0.1, "policy_target": "c3d4", "strategic_flag": 1.0},
             {"fen": "rnbqkbnr/pp2pppp/3p4/8/3PP3/8/PP3PPP/RNBQKBNR b KQkq - 0 4", "value": 0.1, "policy_target": "g8f6", "strategic_flag": 1.0},
             {"fen": "rnbqkb1r/pp2pppp/3p1n2/8/3PP3/8/PP3PPP/RNBQKBNR w KQkq - 1 5", "value": 0.1, "policy_target": "b1c3", "strategic_flag": 1.0},
@@ -166,9 +175,9 @@ def train() -> None:
     # --- 2. Model Setup ---
     print("\nInitializing model...")
     model = RCNModel(
-        in_channels=TOTAL_NODE_FEATURES,
+        in_channels=15, # Corresponds to NEW_NODE_FEATURES in model
         out_channels=config.MODEL_OUT_CHANNELS,
-        num_edge_features=NUM_EDGE_FEATURES
+        num_edge_features=2 # Corresponds to NEW_EDGE_FEATURES in model
     ).to(device)
 
     # Count parameters
@@ -250,7 +259,13 @@ def train() -> None:
                 try:
                     # OPTIMIZATION: Mixed Precision Forward Pass
                     with autocast(enabled=use_amp):
-                        value, (policy_from, policy_to, policy_promo), tactic, strategic = model(batch)
+                        value, policy_logits, tactic, strategic = model(batch)
+
+                        # Create legal move mask
+                        legal_move_masks = torch.stack([create_legal_move_mask(chess.Board(data.fen)) for data in batch.to_data_list()]).to(device)
+
+                        # Apply mask to logits
+                        policy_logits[~legal_move_masks] = -1e9
 
                         # Validate outputs
                         if torch.isnan(value).any():
@@ -258,16 +273,10 @@ def train() -> None:
 
                         loss_v = loss_value_fn(value, batch.y.view(-1, 1))
 
-                        # Safe Policy Loss Calculation
-                        from_targets = batch.policy_target_from
-                        to_targets = batch.policy_target_to
-                        promo_targets = batch.policy_target_promo
+                        # New: Joint Policy Loss Calculation
+                        policy_targets = batch.policy_target
+                        loss_p = loss_policy_fn(policy_logits, policy_targets)
 
-                        loss_p_from = loss_policy_fn(policy_from, from_targets) if (from_targets != -1).any() else torch.tensor(0.0, device=device)
-                        loss_p_to = loss_policy_fn(policy_to, to_targets) if (to_targets != -1).any() else torch.tensor(0.0, device=device)
-                        loss_p_promo = loss_policy_fn(policy_promo, promo_targets) if (promo_targets != -1).any() else torch.tensor(0.0, device=device)
-
-                        loss_p = loss_p_from + loss_p_to + loss_p_promo
                         loss_t = loss_tactic_fn(tactic, batch.tactic_flag.view(-1, 1))
                         loss_s = loss_strategic_fn(strategic, batch.strategic_flag.view(-1, 1))
                         loss = loss_v + loss_p + loss_t + loss_s
@@ -338,22 +347,22 @@ def train() -> None:
 
                         try:
                             with autocast(enabled=use_amp):
-                                value, (policy_from, policy_to, policy_promo), tactic, strategic = model(batch)
+                                value, policy_logits, tactic, strategic = model(batch)
+
+                                # Create legal move mask
+                                legal_move_masks = torch.stack([create_legal_move_mask(chess.Board(data.fen)) for data in batch.to_data_list()]).to(device)
+
+                                # Apply mask to logits
+                                policy_logits[~legal_move_masks] = -1e9
 
                                 if torch.isnan(value).any():
                                     raise ValueError("NaN in validation value")
 
                                 loss_v = loss_value_fn(value, batch.y.view(-1, 1))
 
-                                from_targets = batch.policy_target_from
-                                to_targets = batch.policy_target_to
-                                promo_targets = batch.policy_target_promo
+                                policy_targets = batch.policy_target
+                                loss_p = loss_policy_fn(policy_logits, policy_targets)
 
-                                loss_p_from = loss_policy_fn(policy_from, from_targets) if (from_targets != -1).any() else torch.tensor(0.0, device=device)
-                                loss_p_to = loss_policy_fn(policy_to, to_targets) if (to_targets != -1).any() else torch.tensor(0.0, device=device)
-                                loss_p_promo = loss_policy_fn(policy_promo, promo_targets) if (promo_targets != -1).any() else torch.tensor(0.0, device=device)
-
-                                loss_p = loss_p_from + loss_p_to + loss_p_promo
                                 loss_t = loss_tactic_fn(tactic, batch.tactic_flag.view(-1, 1))
                                 loss_s = loss_strategic_fn(strategic, batch.strategic_flag.view(-1, 1))
                                 loss = loss_v + loss_p + loss_t + loss_s

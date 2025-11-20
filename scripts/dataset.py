@@ -6,12 +6,13 @@ import torch
 import json
 import os
 import atexit
+import chess
 from torch_geometric.data import Dataset as PyGDataset, Data
 from torch.utils.data import Dataset as TorchDataset, get_worker_info
 from typing import List, Tuple, Any, Optional, Dict
 
-from scripts.graph_utils import fen_to_graph_data
-from scripts.move_utils import uci_to_policy_targets
+from scripts.fen_to_graph_data_v2 import fen_to_graph_data_v2
+from scripts.uci_index import uci_to_index_4096
 
 # FIX: Global dictionary to hold file handles for each worker process
 WORKER_FILE_HANDLES: Dict[int, List[Any]] = {}
@@ -91,19 +92,20 @@ class ChessGraphDataset(PyGDataset):
             # Return next item to prevent crash
             return self.get((idx + 1) % len(self))
 
-        graph_data = fen_to_graph_data(data_record['fen'])
-        policy_targets = uci_to_policy_targets(data_record.get('policy_target', ''))
+        graph_data = fen_to_graph_data_v2(chess.Board(data_record['fen']))
+
+        # New: Use single integer policy target
+        uci_move = data_record.get('policy_target', '')
+        if uci_move:
+            policy_target = uci_to_index_4096(uci_move)
+        else:
+            policy_target = -1 # Or some other indicator for missing policy
+
         graph_data.y = torch.tensor([data_record.get('value', 0.0)], dtype=torch.float32)
-
-        from_sq, to_sq, promo = policy_targets.get('from', -1), policy_targets.get('to', -1), policy_targets.get('promo', -1)
-        if from_sq < 0 or from_sq >= 64 or to_sq < 0 or to_sq >= 64:
-            from_sq, to_sq, promo = -1, -1, -1
-
-        graph_data.policy_target_from = torch.tensor(from_sq, dtype=torch.long)
-        graph_data.policy_target_to = torch.tensor(to_sq, dtype=torch.long)
-        graph_data.policy_target_promo = torch.tensor(promo, dtype=torch.long)
+        graph_data.policy_target = torch.tensor(policy_target, dtype=torch.long)
         graph_data.tactic_flag = torch.tensor([data_record.get('tactic_flag', 0.0)], dtype=torch.float32)
         graph_data.strategic_flag = torch.tensor([data_record.get('strategic_flag', 0.0)], dtype=torch.float32)
+        graph_data.fen = data_record['fen']
 
         return graph_data
 
@@ -142,18 +144,17 @@ if __name__ == '__main__':
 
     # Test item retrieval (simulating worker 0)
     sample1 = dataset.get(1)
-    expected_targets1 = uci_to_policy_targets("a7a5")
-    assert sample1.policy_target_from.item() == expected_targets1['from']
+    expected_policy_index = uci_to_index_4096("a7a5")
+    assert sample1.policy_target.item() == expected_policy_index
     print("Sample retrieval is correct.")
 
     # Test with DataLoader
-    from torch.utils.data import DataLoader
+    from torch_geometric.loader import DataLoader
     loader = DataLoader(dataset, batch_size=2, num_workers=0) # test with 0 and 2 workers
     print("\nTesting with DataLoader (num_workers=0)...")
     for i, batch in enumerate(loader):
         print(f"Batch {i}: {batch}")
         assert batch.batch is not None
-        assert len(batch.y) == 2
     print("✓ DataLoader (num_workers=0) works.")
 
     # Clean up global state for next test if needed

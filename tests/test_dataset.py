@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from scripts.dataset import ChessGraphDataset, cleanup_worker_files
-from scripts.move_utils import uci_to_policy_targets
+from scripts.uci_index import uci_to_index_4096
 
 class TestChessGraphDataset(unittest.TestCase):
     test_path = "test_data.jsonl"
@@ -34,22 +34,20 @@ class TestChessGraphDataset(unittest.TestCase):
         self.assertEqual(len(dataset), 2)
 
     def test_item_retrieval_and_targets(self):
-        """Tests that data samples are retrieved correctly, including promotion targets."""
+        """Tests that data samples are retrieved correctly with the new policy target."""
         dataset = ChessGraphDataset(jsonl_paths=[self.test_path])
 
         # Test standard move
         sample1 = dataset.get(0)
-        expected1 = uci_to_policy_targets("e2e4")
-        self.assertEqual(sample1.policy_target_from.item(), expected1['from'])
-        self.assertEqual(sample1.policy_target_to.item(), expected1['to'])
-        self.assertEqual(sample1.policy_target_promo.item(), -1)
+        expected_index1 = uci_to_index_4096("e2e4")
+        self.assertEqual(sample1.policy_target.item(), expected_index1)
 
         # Test promotion move
+        # Note: The 4096 representation does not distinguish promotion pieces.
+        # 'a2a1q', 'a2a1r', etc., will all map to the same index.
         sample2 = dataset.get(1)
-        expected2 = uci_to_policy_targets("a2a1q")
-        self.assertEqual(sample2.policy_target_from.item(), expected2['from'])
-        self.assertEqual(sample2.policy_target_to.item(), expected2['to'])
-        self.assertEqual(sample2.policy_target_promo.item(), 3) # Queen
+        expected_index2 = uci_to_index_4096("a2a1q")
+        self.assertEqual(sample2.policy_target.item(), expected_index2)
 
     def test_handles_empty_and_nonexistent_files(self):
         """Tests that the dataset handles empty or missing files gracefully."""
