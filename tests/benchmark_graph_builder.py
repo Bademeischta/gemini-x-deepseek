@@ -17,6 +17,7 @@ def benchmark(fen_list, repeats=3):
     for _ in range(repeats):
         t0 = time.perf_counter()
         for fen in fen_list:
+            # FIX: Create board object here to pass to graph builder
             board = chess.Board(fen.strip())
             _ = fen_to_graph_data_v2(board)
         t1 = time.perf_counter()
@@ -31,5 +32,11 @@ if __name__ == '__main__':
     if len(sys.argv) < 2:
         print("Usage: python benchmark_graph_builder.py fens.txt")
         sys.exit(1)
-    fens = [l.strip() for l in open(sys.argv[1], 'r', encoding='utf-8') if l.strip()]
-    benchmark(fens)
+
+    try:
+        fens = [l.strip() for l in open(sys.argv[1], 'r', encoding='utf-8') if l.strip()]
+        print(f"Benchmarking with {len(fens)} FENs...")
+        benchmark(fens)
+    except Exception as e:
+        print(f"Error running benchmark: {e}")
+        sys.exit(1)

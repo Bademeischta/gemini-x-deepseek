@@ -5,10 +5,7 @@ from torch_geometric.data import Data
 from typing import Tuple
 
 import config
-# No longer importing from graph_utils, constants are self-contained.
-
-# 6 piece types x 2 colors
-NUM_PIECE_TYPES = 12
+from scripts.fen_to_graph_data_v2 import NODE_FEATURES, EDGE_FEATURES
 
 class RCNModel(nn.Module):
 
@@ -18,17 +15,17 @@ class RCNModel(nn.Module):
         """
         super(RCNModel, self).__init__()
 
+        # Validation of input dimensions
+        assert in_channels == NODE_FEATURES, f"Expected {NODE_FEATURES} node features, got {in_channels}"
+        assert num_edge_features == EDGE_FEATURES, f"Expected {EDGE_FEATURES} edge features, got {num_edge_features}"
+
         # The new fen_to_graph_data_v2 provides a 15-dim feature vector directly.
         # No embedding layer is needed.
-        NEW_NODE_FEATURES = 15
-        # The new edge_attr is a 2-dim one-hot vector (attack/defend).
-        NEW_EDGE_FEATURES = 2
-
-        self.conv1 = GATv2Conv(NEW_NODE_FEATURES, 32, heads=heads, edge_dim=NEW_EDGE_FEATURES)
+        self.conv1 = GATv2Conv(NODE_FEATURES, 32, heads=heads, edge_dim=EDGE_FEATURES)
         self.norm1 = BatchNorm(32 * heads)
-        self.conv2 = GATv2Conv(32 * heads, 64, heads=heads, edge_dim=NEW_EDGE_FEATURES)
+        self.conv2 = GATv2Conv(32 * heads, 64, heads=heads, edge_dim=EDGE_FEATURES)
         self.norm2 = BatchNorm(64 * heads)
-        self.conv3 = GATv2Conv(64 * heads, out_channels, heads=1, concat=False, edge_dim=NEW_EDGE_FEATURES)
+        self.conv3 = GATv2Conv(64 * heads, out_channels, heads=1, concat=False, edge_dim=EDGE_FEATURES)
         self.norm3 = BatchNorm(out_channels)
 
         self.dropout = nn.Dropout(p=config.DROPOUT_RATE)
