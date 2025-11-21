@@ -1,23 +1,19 @@
-# Projekt "Ressourcen-Effiziente Dominanz" (RCN)
+# Projekt "Ressourcen-Effiziente Dominanz" (RCN) v2
 
-Willkommen beim RCN-Projekt! Dieses Projekt zielt darauf ab, eine hochmoderne Schach-KI zu entwickeln, die auf einer einzigartigen Kombination aus Graphen-neuronalen Netzen und traditionellen Suchalgorithmen basiert. Unser Ziel ist es, eine Engine zu schaffen, die nicht nur stark spielt, sondern auch die zugrundeliegenden strategischen und taktischen Muster einer Schachstellung tiefgreifend versteht.
+Willkommen beim RCN-Projekt! Dieses Projekt zielt darauf ab, eine hochmoderne Schach-KI zu entwickeln, die auf einer einzigartigen Kombination aus Graphen-neuronalen Netzen (GNN) und Monte Carlo Tree Search (MCTS) basiert. Unser Ziel ist es, eine Engine zu schaffen, die nicht nur stark spielt, sondern auch die zugrundeliegenden strategischen und taktischen Muster einer Schachstellung tiefgreifend versteht.
 
 ## Inhaltsverzeichnis
 
 - [Philosophie und Kernkonzepte](#philosophie-und-kernkonzepte)
 - [Wie die KI funktioniert: Ein tiefer Einblick](#wie-die-ki-funktioniert-ein-tiefer-einblick)
   - [1. Die Daten-Pipeline](#1-die-daten-pipeline)
-  - [2. Das Herzstück: Das Relational Chess Net (RCN)](#2-das-herzstück-das-relational-chess-net-rcn)
-  - [3. Die Suche: Information-Rich Alpha-Beta (IR-AB)](#3-die-suche-information-rich-alpha-beta-ir-ab)
+  - [2. Das Herzstück: Das Relational Chess Net (RCN v2)](#2-das-herzstück-das-relational-chess-net-rcn-v2)
+  - [3. Die Suche: Batch-MCTS](#3-die-suche-batch-mcts)
 - [Projektstruktur](#projektstruktur)
 - [Einrichtung und Nutzung](#einrichtung-und-nutzung)
   - [Lokale Nutzung](#lokale-nutzung)
   - [Google Colab Nutzung](#google-colab-nutzung)
 - [Wichtige Skripte und ihre Verwendung](#wichtige-skripte-und-ihre-verwendung)
-  - [`benchmark_hardware.py`](#benchmark_hardwarepy)
-  - [`train.py`](#trainpy)
-  - [`engine.py`](#enginepy)
-  - [Datenverarbeitungs-Skripte](#datenverarbeitungs-skripte)
 - [Troubleshooting](#troubleshooting)
 - [Projekt-Status](#projekt-status)
 
@@ -25,180 +21,130 @@ Willkommen beim RCN-Projekt! Dieses Projekt zielt darauf ab, eine hochmoderne Sc
 
 ## Philosophie und Kernkonzepte
 
-Die zentrale Hypothese dieses Projekts ist, dass Schach weniger ein Brettspiel als vielmehr ein dynamisches Netzwerk von Beziehungen zwischen Figuren ist. Anstatt das Brett als ein 8x8-Gitter zu betrachten, modellieren wir es als einen Graphen, in dem Figuren die Knoten und ihre Interaktionen (Angriff, Verteidigung, Fesselung) die Kanten sind.
+Die zentrale Hypothese dieses Projekts ist, dass Schach weniger ein Brettspiel als vielmehr ein dynamisches Netzwerk von Beziehungen zwischen Figuren ist. Anstatt das Brett als ein 8x8-Gitter zu betrachten, modellieren wir es als einen Graphen, in dem Figuren die Knoten und ihre Interaktionen (Angriff, Verteidigung) die Kanten sind.
 
 Das System basiert auf drei Säulen:
-1.  **Daten (KKK):** Ein kompilierter, dichter Korpus aus existierenden, hochwertigen Analysedaten (`Kompilierter Kritischer Korpus`). Wir nutzen Puzzle-Datenbanken und strategische Meisterpartien, um dem Modell sowohl taktische Schärfe als auch positionelles Verständnis beizubringen.
-2.  **Architektur (RCN):** Ein Graph Attention Network (`Relational Chess Net`), das diese Beziehungen modelliert. Es lernt, die Bedeutung von Figuren in Abhängigkeit von ihrem Kontext zu bewerten – genau wie ein menschlicher Großmeister.
-3.  **Inferenz (IR-AB):** Eine CPU-basierte Alpha-Beta-Suche, die durch die GPU-gestützte neuronale Intelligenz geführt wird (`Information-Rich Alpha-Beta`). Die KI sagt nicht nur den "besten" Zug voraus, sondern liefert eine reichhaltige Heuristik (Wertung, Zug-Wahrscheinlichkeiten, taktische Flags), die eine intelligentere und effizientere Suche ermöglicht.
+1.  **Daten (KKK):** Ein kompilierter, dichter Korpus aus existierenden, hochwertigen Analysedaten. Wir nutzen Puzzle-Datenbanken und strategische Meisterpartien.
+2.  **Architektur (RCN v2):** Ein Graph Attention Network (`GATv2`), das diese Beziehungen modelliert. Version 2 nutzt optimierte Features und eine vereinfachte Kantenstruktur für höhere Effizienz.
+3.  **Inferenz (MCTS):** Eine GPU-beschleunigte Monte Carlo Tree Search (`BatchMCTS`). Anstatt klassischer Alpha-Beta-Suche nutzt die Engine die Wahrscheinlichkeiten des neuronalen Netzes, um den Suchbaum selektiv zu expandieren. Blattknoten werden gesammelt und in Batches auf der GPU evaluiert.
 
 ---
 
 ## Wie die KI funktioniert: Ein tiefer Einblick
 
 ### 1. Die Daten-Pipeline
-Alles beginnt mit den Daten. Wir verwenden `.jsonl`-Dateien, die Schachstellungen (im FEN-Format) zusammen mit Metadaten enthalten:
--   `value`: Eine quantitative Bewertung der Stellung (z.B. von Stockfish).
+Wir verwenden `.jsonl`-Dateien, die Schachstellungen (im FEN-Format) zusammen mit Metadaten enthalten:
+-   `value`: Eine quantitative Bewertung der Stellung.
 -   `policy_target`: Der beste Zug in der Stellung (im UCI-Format).
--   `tactic_flag`: Ein boolescher Wert, der anzeigt, ob die Stellung eine taktische Sequenz enthält.
--   `strategic_flag`: Ein boolescher Wert, der strategische Motive hervorhebt.
+-   `tactic_flag` / `strategic_flag`: Indikatoren für taktische oder strategische Motive.
 
-Diese Daten werden mit Skripten wie `process_puzzles.py` und `process_elite_games.py` aus Rohdaten (z.B. PGN-Dateien) generiert.
+Das Skript `scripts/dataset.py` lädt diese Daten effizient und wandelt sie on-the-fly in Graphen um. Dabei werden `legal_moves_mask` (Maske für legale Züge) für das Training vorberechnet, um die Policy-Vorhersagen valide zu halten.
 
-### 2. Das Herzstück: Das Relational Chess Net (RCN)
-Das RCN ist ein Graphen-neuronales Netz (`GNN`) mit `GATv2Conv`-Schichten (Graph Attention Network).
+### 2. Das Herzstück: Das Relational Chess Net (RCN v2)
+Das RCN v2 ist ein Graphen-neuronales Netz, definiert in `scripts/model.py`. Es wurde gegenüber v1 stark optimiert:
 
--   **Graphen-Erstellung (`fen_to_graph_data`):** Für jede FEN-Stellung wird ein Graph erstellt:
-    -   **Knoten:** Jede Figur auf dem Brett ist ein Knoten. Die Knoten-Features enthalten Informationen wie Figurentyp, Farbe, Position und globale Zustandsinformationen (Rochaderechte, En-Passant-Feld, 50-Züge-Zähler).
-    -   **Kanten:** Kanten repräsentieren die Beziehungen zwischen den Figuren. Wir verwenden verschiedene Kantentypen: `ATTACKS`, `DEFENDS`, `PIN` (Fesselung) und `XRAY`.
--   **Lernprozess:** Das Modell lernt, die Aufmerksamkeit auf die wichtigsten Beziehungen in einer Stellung zu lenken. Es hat mehrere "Köpfe" (Output-Layer), die Folgendes vorhersagen:
-    -   **Value Head:** Die allgemeine Bewertung der Stellung.
-    -   **Policy Heads (From, To, Promotion):** Die Wahrscheinlichkeit für jeden möglichen Zug, aufgeteilt in Startfeld, Zielfeld und Umwandlungsfigur.
-    -   **Tactic/Strategic Flag Heads:** Ob es sich um eine taktische oder strategische Stellung handelt.
+-   **Graphen-Erstellung (`fen_to_graph_data_v2.py`):**
+    -   **Knoten (15 Features):** Jede Figur ist ein Knoten. Features sind: 12x One-Hot für Figur/Farbe, 1x File (normiert), 1x Rank (normiert), 1x Mobilität. Keine Embeddings mehr nötig!
+    -   **Kanten (2 Features):** Gerichtete Kanten repräsentieren Angriffe und Verteidigungen. `Edge Attr`: [1, 0] für Angriff (Attack), [0, 1] für Verteidigung (Defend).
+-   **Modell-Köpfe:**
+    -   **Value Head:** Bewertung der Stellung (Scalar).
+    -   **Joint Policy Head:** Ein Output-Vektor der Größe 4096, der alle möglichen Züge (From-Square * 64 + To-Square) abdeckt.
+    -   **Auxiliary Heads:** Tactic/Strategic Flags zur Unterstützung des Lernprozesses.
 
-### 3. Die Suche: Information-Rich Alpha-Beta (IR-AB)
-Die `engine.py` implementiert eine klassische Negamax-Suche mit Alpha-Beta-Pruning. Der Clou ist, wie die Vorhersagen des RCN-Modells die Suche steuern:
-1.  **Zug-Sortierung (Move Ordering):** Anstatt Züge blind zu durchsuchen, werden sie intelligent sortiert. Eine gute Sortierung ist entscheidend für effizientes Pruning. Die Priorität ist:
-    1.  PV-Zug (aus der Transpositionstabelle)
-    2.  Gute Schlagzüge (bewertet nach MVV-LVA)
-    3.  Killer-Züge
-    4.  Vom Policy-Netzwerk vorhergesagte Züge.
-2.  **Quiescence Search:** Um den "Horizon-Effekt" zu vermeiden, wird am Ende der Hauptsuche eine spezielle, flachere Suche nach Schlagzügen durchgeführt, um die Stellung zu stabilisieren.
-3.  **Transposition Table:** Bereits analysierte Stellungen werden in einer Hashtabelle (Transposition Table) gespeichert, um redundante Berechnungen zu vermeiden.
+### 3. Die Suche: Batch-MCTS
+Die `engine.py` nutzt nun einen **Batch Monte Carlo Tree Search** (`scripts/mcts.py`).
+-   **Selektion:** Der Baum wird basierend auf der PUCT-Formel (Predictor + Upper Confidence Bound applied to Trees) traversiert, die die Policy-Vorhersagen des RCN ("Priors") mit den Besuchszahlen ("Exploration") abwägt.
+-   **Batch-Evaluierung:** Um die GPU effizient zu nutzen, werden Blattknoten gesammelt, bis ein Batch voll ist (z.B. 16 oder 32 Stellungen). Dieser Batch wird parallel durch das RCN geschleust.
+-   **Backpropagation:** Die Ergebnisse (Value und Policy) werden im Baum zurückpropagiert.
 
 ---
 
 ## Projektstruktur
 
 ```
-├── data/                  # Trainingsdaten (z.B. puzzles.jsonl)
-├── models/                # Trainierte Modelle (rcn_model.pth) und Checkpoints
-├── scripts/               # Hilfsskripte
-│   ├── dataset.py         # PyTorch Dataset-Klassen
-│   ├── model.py           # RCN-Modellarchitektur
-│   ├── graph_utils.py     # Logik zur Umwandlung von FEN in Graphen
-│   └── ...                # Weitere Skripte zur Datenverarbeitung
-├── tests/                 # Unit- und Integrationstests
-├── benchmark_hardware.py  # Skript zur Hardware-Diagnose
-├── config.py              # Zentrale Konfigurationsdatei
-├── engine.py              # UCI-kompatible Schach-Engine
-├── train.py               # Skript zum Trainieren des Modells
-└── requirements.txt       # Projektabhängigkeiten
+├── data/                      # Trainingsdaten
+├── models/                    # Trainierte Modelle (rcn_model.pth)
+├── scripts/                   # Kern-Logik und Hilfsskripte
+│   ├── dataset.py             # Robustes Dataset mit Pre-Computing
+│   ├── fen_to_graph_data_v2.py # V2 Graph Builder (SSOT für Konstanten)
+│   ├── mcts.py                # Batch-MCTS Implementierung
+│   ├── model.py               # RCN v2 Modellarchitektur
+│   ├── uci_index.py           # Move-Index Konvertierung (4096)
+│   ├── graph_utils.py         # Deprecated (Legacy Shim)
+│   └── ...
+├── tests/                     # Unit-Tests und Benchmarks
+├── config.py                  # Zentrale Konfiguration
+├── engine.py                  # UCI-Engine (nutzt MCTS)
+├── train.py                   # Trainings-Loop (Mixed Precision)
+└── requirements.txt           # Abhängigkeiten
 ```
 
 ---
 
 ## Einrichtung und Nutzung
 
-Dieses Projekt kann sowohl lokal als auch in Google Colab ausgeführt werden.
+Dieses Projekt kann lokal oder in Google Colab ausgeführt werden.
 
 ### Lokale Nutzung
 
-**1. Voraussetzungen:**
-- Python 3.8+
-- Git
-- Eine NVIDIA-GPU mit CUDA-Unterstützung wird für ernsthaftes Training dringend empfohlen.
-
-**2. Installation:**
+**1. Installation:**
 ```bash
-git clone https://github.com/Bademeischta/gemini-x-deepseek
+git clone <repo-url>
 cd gemini-x-deepseek
 pip install -r requirements.txt
 ```
 
-**3. Hardware-Benchmark (Empfohlen):**
-Führen Sie vor dem ersten Training den Hardware-Benchmark aus. Dieses Skript testet Ihre Systemleistung und gibt wichtige Empfehlungen zur Optimierung Ihrer Konfiguration.
+**2. Hardware-Test:**
 ```bash
 python benchmark_hardware.py
 ```
-Analysieren Sie die Ausgabe und passen Sie ggf. die `config.py` (z.B. `BATCH_SIZE`) an.
 
-**4. Training starten:**
-Stellen Sie sicher, dass Ihre `.jsonl`-Datendateien im `data/`-Verzeichnis liegen. Starten Sie dann das Training:
+**3. Training:**
 ```bash
 python train.py
 ```
-Das Training kann fortgesetzt werden, falls ein Checkpoint in `models/` gefunden wird. Fortschrittsbalken informieren Sie über den Status.
+Das Training nutzt automatisch Mixed Precision (`AMP`) und speichert Checkpoints.
 
-**5. Engine verwenden:**
-Die Engine kommuniziert über das Standard-UCI-Protokoll. Sie können sie in jeder UCI-kompatiblen Schach-GUI (z.B. Arena, Cute Chess, Scid vs. PC) einbinden. Geben Sie als Engine-Pfad den folgenden Befehl an:
+**4. Engine:**
+Die Engine ist UCI-kompatibel. Starten Sie sie in Ihrer GUI:
 ```bash
-python /pfad/zu/ihrem/projekt/engine.py
+python engine.py
 ```
-
-### Google Colab Nutzung
-
-Colab ist eine hervorragende Option für das Training, da es kostenlosen GPU-Zugang bietet. Das Projekt ist für die persistente Speicherung in Google Drive ausgelegt.
-
-**1. Notebook einrichten:**
-- Öffnen Sie ein neues Colab-Notebook.
-- Stellen Sie sicher, dass Sie eine GPU-Laufzeit verwenden: `Laufzeit` → `Laufzeittyp ändern` → `T4 GPU`.
-
-**2. Google Drive verbinden:**
-Führen Sie diesen Befehl in einer Zelle aus, um Ihr Google Drive zu mounten.
-```python
-from google.colab import drive
-drive.mount('/content/drive')
-```
-
-**3. Projekt klonen und installieren:**
-```python
-%cd /content/drive/MyDrive/
-!git clone https://github.com/Bademeischta/gemini-x-deepseek
-%cd gemini-x-deepseek
-!pip install -r requirements.txt
-```
-
-**4. Daten-Upload:**
-Laden Sie Ihre `.jsonl`-Datensätze in den Ordner `/content/drive/MyDrive/gemini-x-deepseek/data/` hoch.
-
-**5. Hardware-Benchmark & Training:**
-Führen Sie die Skripte wie bei der lokalen Nutzung aus, aber mit einem `!` vor dem Befehl:
-```python
-!python benchmark_hardware.py
-!python train.py
-```
-Trainierte Modelle und Checkpoints werden persistent in Ihrem Google Drive im `models/`-Ordner gespeichert.
+*Hinweis: Die Engine benötigt ein trainiertes Modell in `models/rcn_model.pth` oder `config.MODEL_SAVE_PATH`. Wenn keines gefunden wird, wird eine Warnung ausgegeben und ein zufälliges Modell verwendet (nur zum Testen).*
 
 ---
 
 ## Wichtige Skripte und ihre Verwendung
 
-### `benchmark_hardware.py`
-Ein Diagnose-Tool, das **vor dem Training** ausgeführt werden sollte. Es prüft:
--   Ob eine GPU erkannt wird und korrekt funktioniert.
--   Die Geschwindigkeit des Datentransfers zur GPU.
--   Die Forward-Pass-Geschwindigkeit des Modells bei verschiedenen Batch-Größen.
--   Gibt konkrete Empfehlungen zur Optimierung von `BATCH_SIZE`, `num_workers`, etc.
+### `scripts/fen_to_graph_data_v2.py`
+Der Kern-Algorithmus zur Umwandlung von `chess.Board` Objekten in PyTorch Geometric Graphen. Definiert auch die globalen Konstanten `NODE_FEATURES` und `EDGE_FEATURES`.
+
+### `scripts/mcts.py`
+Die Such-Engine. Implementiert `BatchMCTS`. Kann konfiguriert werden, um die Anzahl der Simulationen pro Zug zu steuern.
 
 ### `train.py`
-Das Hauptskript für das Training des RCN-Modells.
--   **Fortschrittsanzeigen:** Verwendet `tqdm`, um den Fortschritt auf Epochen- und Batch-Ebene anzuzeigen.
--   **GPU-Optimierung:** Nutzt automatisch Mixed Precision (`torch.amp`) und optimierte `DataLoader`-Einstellungen, wenn eine GPU verfügbar ist, um das Training erheblich zu beschleunigen.
--   **Checkpointing:** Speichert nach jeder Epoche einen Checkpoint und das beste Modell. Das Training kann jederzeit unterbrochen und fortgesetzt werden.
--   **Deadlock-sicher:** Die Daten-Pipeline ist so konzipiert, dass sie auch bei paralleler Datenverarbeitung nicht blockiert.
+Der Trainings-Loop.
+-   **Features:** Mixed Precision Training, Gradient Clipping, Progress Bars (tqdm), Validation Split.
+-   **Logik:** Nutzt pre-computed Masks aus dem Dataset, um illegale Züge im Policy-Loss zu ignorieren.
 
 ### `engine.py`
-Die UCI-Engine. Dieses Skript wird von Schach-GUIs aufgerufen. Es lädt das trainierte Modell aus `models/rcn_model.pth` und startet die Suchlogik.
-
-### Datenverarbeitungs-Skripte
--   `scripts/process_puzzles.py`: Verarbeitet eine `.csv`-Datei mit Schachpuzzles, um ein `.jsonl`-Trainingsset zu erstellen.
--   `scripts/process_elite_games.py`: Analysiert PGN-Dateien von hochrangigen Partien, um strategische Trainingsdaten zu generieren.
+Der Einstiegspunkt für GUIs. Initialisiert das Modell (mit Fallback-Mechanismus) und den `BatchMCTS` Searcher.
 
 ---
 
 ## Troubleshooting
 
--   **Problem: "CUDA out of memory"**
-    -   **Lösung:** Reduzieren Sie die `BATCH_SIZE` in `config.py`. Führen Sie `benchmark_hardware.py` erneut aus, um eine empfohlene Größe zu finden.
--   **Problem: GPU-Auslastung in `nvidia-smi` ist < 30%**
-    -   **Ursache:** Die CPU kann die Daten nicht schnell genug vorbereiten (CPU-Bottleneck).
-    -   **Lösung:** Erhöhen Sie `num_workers` in `train.py` (nur wenn auf GPU trainiert wird), stellen Sie sicher, dass die Daten auf einer schnellen Festplatte (SSD) liegen.
--   **Problem: Training startet nicht, `FileNotFoundError`**
-    -   **Lösung:** Stellen Sie sicher, dass das `data/`-Verzeichnis existiert. Das Trainingsskript kann Dummy-Dateien erstellen, aber nicht das Verzeichnis selbst. Erstellen Sie es manuell: `mkdir data`.
+-   **Problem: `AssertionError` in `model.py`**
+    -   **Ursache:** Veraltete `graph_utils.py` oder falsche Feature-Dimensionen.
+    -   **Lösung:** Stellen Sie sicher, dass Sie `fen_to_graph_data_v2` verwenden und das Modell korrekt importiert wird.
+-   **Problem: Engine stürzt ab "No model found"**
+    -   **Lösung:** Die Engine läuft jetzt weiter (mit Warnung), spielt aber zufällige Züge. Trainieren Sie ein Modell mit `train.py`, um echte Spielstärke zu erhalten.
+-   **Problem: Benchmark Crash**
+    -   **Lösung:** Stellen Sie sicher, dass Sie `tests/benchmark_graph_builder.py` ausführen, welches jetzt korrekt `chess.Board` Objekte verwendet.
 
 ---
 
 ## Projekt-Status
 
-Dieses Projekt befindet sich in aktiver Entwicklung. Eine detaillierte Liste der abgeschlossenen und geplanten Aufgaben finden Sie im oberen Teil dieser `README.md` und in der `CHANGELOG.md`.
+**Aktuell:** RCN v2 Implementierung (Konsistente Architektur, MCTS Integration, Robustes Dataset).
+**Nächste Schritte:** Erweiterung der Trainingsdaten, Hyperparameter-Tuning des MCTS.
