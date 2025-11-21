@@ -65,40 +65,63 @@ class BatchMCTS:
                 # selection
                 while not node.is_leaf() and not node.board.is_game_over():
                     # choose child with max ucb
+                    if not node.children: # Should be handled by expand, but safety check
+                        break
                     best = max(node.children.values(), key=lambda c: c.ucb_score())
                     node = best
+
                 if node.board.is_game_over():
                     # terminal leaf - we'll handle value at backprop
                     batch_nodes.append((node, None))
                     continue
+
                 # expand (create children for this node)
-                node.expand()
+                if not node.children:
+                    node.expand()
+
                 batch_nodes.append((node, list(node.children.keys())))  # store move list for prior assignment
+
+            if not batch_nodes:
+                break
 
             # BUILD batch graphs for evaluation
             graphs = []
             nodes_metadata = []
-            for node, moves in batch_nodes:
-                # node.board is the board to evaluate
-                g = fen_to_graph_data_v2(node.board)
-                graphs.append(g)
-                nodes_metadata.append((node, moves))
 
+            for node, moves in batch_nodes:
+                try:
+                    # FIX: node.board is already a Board object!
+                    g = fen_to_graph_data_v2(node.board)
+                    graphs.append(g)
+                    nodes_metadata.append((node, moves))
+                except Exception as e:
+                    print(f"ERROR in graph construction: {e}")
+                    # Skip this node
+                    continue
+
+            if not graphs:
+                continue
+
+            # EVALUATE BATCH
             batch = Batch.from_data_list(graphs).to(self.device)
+
             with torch.no_grad():
                 values, policy_logits, _, _ = self.model(batch)
 
-            # split outputs per graph (assumes consistent batch ordering)
-            start = 0
+            # ASSIGN PRIORS & BACKPROPAGATE
             for i, (node, moves) in enumerate(nodes_metadata):
                 value = values[i].item()
-                policy = torch.softmax(policy_logits[i], dim=0).cpu().numpy()  # 4096-vector
+                policy = torch.softmax(policy_logits[i], dim=0).cpu().numpy()
 
-                # assign priors to children
+                # Assign priors to children
                 if moves is not None:
                     for mv in node.children.keys():
-                        idx = uci_to_index_4096(mv.uci())
-                        node.children[mv].prior = float(policy[idx])
+                        try:
+                            idx = uci_to_index_4096(mv.uci())
+                            node.children[mv].prior = float(policy[idx])
+                        except Exception as e:
+                            print(f"ERROR assigning prior for move {mv.uci()}: {e}")
+                            node.children[mv].prior = 1e-8
 
                 # Backpropagate value up the path
                 cur = node
@@ -109,6 +132,11 @@ class BatchMCTS:
                     cur_value = -cur_value  # perspective flip
                     cur = cur.parent
 
-        # choose best move by visits from root children
+        # Return best move by visits
+        if not root.children:
+            # Fallback: return random legal move
+            legal_moves = list(root.board.legal_moves)
+            return legal_moves[0] if legal_moves else None
+
         best_move, best_child = max(root.children.items(), key=lambda x: x[1].visits)
         return best_move

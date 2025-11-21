@@ -65,25 +65,29 @@ def uci_loop(stdin: IO[str] = sys.stdin, stdout: IO[str] = sys.stdout) -> None:
             out_channels=config.MODEL_OUT_CHANNELS,
             num_edge_features=2
         )
+
         if os.path.exists(config.MODEL_SAVE_PATH):
             try:
-                model.load_state_dict(torch.load(config.MODEL_SAVE_PATH, map_location=device))
-                print(f"Model loaded from {config.MODEL_SAVE_PATH}", file=sys.stderr)
+                state_dict = torch.load(config.MODEL_SAVE_PATH, map_location=device)
+                model.load_state_dict(state_dict)
+                print(f"✓ Model loaded from {config.MODEL_SAVE_PATH}", file=sys.stderr)
             except Exception as e:
-                print(f"WARNING: Failed to load model from {config.MODEL_SAVE_PATH}: {e}", file=sys.stderr)
-                print(f"Using randomly initialized model!", file=sys.stderr)
+                print(f"⚠ WARNING: Failed to load model weights: {e}", file=sys.stderr)
+                print(f"⚠ Using randomly initialized model!", file=sys.stderr)
         else:
-            print(f"WARNING: Model file not found at {config.MODEL_SAVE_PATH}", file=sys.stderr)
-            print(f"Using randomly initialized model!", file=sys.stderr)
+            print(f"⚠ WARNING: No model found at {config.MODEL_SAVE_PATH}", file=sys.stderr)
+            print(f"⚠ Using randomly initialized model!", file=sys.stderr)
+
         model.to(device)
         model.eval()
         searcher = BatchMCTS(model, device=device)
         is_initialized = True
+
     except Exception as e:
-        log_command("ENGINE_ERROR", f"Failed to initialize Model/Searcher: {e}")
-        # In case of error, we can't proceed.
-        # A real engine might have a dummy mode, but we'll exit.
-        return
+        log_command("ENGINE_ERROR", f"CRITICAL: Failed to initialize Model/Searcher: {e}")
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        return  # Cannot proceed without model
 
     while True:
         line = stdin.readline()

@@ -9,6 +9,10 @@ import torch
 from torch_geometric.data import Data
 import chess
 
+# Constants for model architecture
+NODE_FEATURES = 15  # 12 piece types + file + rank + mobility
+EDGE_FEATURES = 2   # Attack (1) / Defend (0)
+
 # Mapping piece types -> one-hot index base (6 types * 2 colors = 12 features)
 PIECE_TYPE_TO_IDX = {
     (chess.PAWN, True): 0, (chess.KNIGHT, True): 1, (chess.BISHOP, True): 2,

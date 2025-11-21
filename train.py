@@ -252,6 +252,7 @@ def train() -> None:
                         value, policy_logits, tactic, strategic = model(batch)
 
                         # Use pre-computed legal move mask and reshape it
+                        # The mask is pre-computed in dataset.py, so we don't recompute it here!
                         legal_move_masks = batch.legal_moves_mask.view(-1, 4096).to(device)
 
                         # Apply mask to logits

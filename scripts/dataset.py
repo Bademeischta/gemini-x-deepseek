@@ -92,14 +92,26 @@ class ChessGraphDataset(PyGDataset):
             # Return next item to prevent crash
             return self.get((idx + 1) % len(self))
 
-        graph_data = fen_to_graph_data_v2(chess.Board(data_record['fen']))
+        # FIX: Robustly create Board object
+        try:
+            board = chess.Board(data_record['fen'])
+        except Exception as e:
+            print(f"Invalid FEN at index {idx}: {data_record.get('fen', 'UNKNOWN')}. Error: {e}")
+            return self.get((idx + 1) % len(self))
 
-        # New: Use single integer policy target
+        # FIX: Pass Board object (not FEN string)
+        graph_data = fen_to_graph_data_v2(board)
+
+        # Policy Target Conversion
         uci_move = data_record.get('policy_target', '')
         if uci_move:
-            policy_target = uci_to_index_4096(uci_move)
+            try:
+                policy_target = uci_to_index_4096(uci_move)
+            except Exception as e:
+                print(f"Invalid UCI move '{uci_move}' at index {idx}: {e}")
+                policy_target = -1
         else:
-            policy_target = -1 # Or some other indicator for missing policy
+            policy_target = -1
 
         graph_data.y = torch.tensor([data_record.get('value', 0.0)], dtype=torch.float32)
         graph_data.policy_target = torch.tensor(policy_target, dtype=torch.long)
@@ -107,13 +119,18 @@ class ChessGraphDataset(PyGDataset):
         graph_data.strategic_flag = torch.tensor([data_record.get('strategic_flag', 0.0)], dtype=torch.float32)
         graph_data.fen = data_record['fen']
 
-        # Pre-compute legal move mask
-        board = chess.Board(data_record['fen'])
-        legal_moves_mask = torch.zeros(4096, dtype=torch.bool)
-        for move in board.legal_moves:
-            idx = uci_to_index_4096(move.uci())
-            legal_moves_mask[idx] = True
-        graph_data.legal_moves_mask = legal_moves_mask
+        # Pre-compute legal move mask using the already created board object
+        # This avoids re-creating the board and is consistent per-sample
+        try:
+            legal_moves_mask = torch.zeros(4096, dtype=torch.bool)
+            for move in board.legal_moves:
+                idx = uci_to_index_4096(move.uci())
+                legal_moves_mask[idx] = True
+            graph_data.legal_moves_mask = legal_moves_mask
+        except Exception as e:
+            print(f"Error creating legal move mask at index {idx}: {e}")
+            # Fallback to allow all moves (loss will penalize illegals) or empty
+            graph_data.legal_moves_mask = torch.ones(4096, dtype=torch.bool)
 
         return graph_data
 
